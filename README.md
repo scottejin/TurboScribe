@@ -1,4 +1,4 @@
-# Turboscribe
+# TurboScribe
 
 A macOS desktop app for local speech-to-text transcription using **Whisper large-v3-turbo**.
 
@@ -11,7 +11,7 @@ A macOS desktop app for local speech-to-text transcription using **Whisper large
 - Progress bar with estimated time remaining
 - Transcript output saved as `.txt`
 
-## Why Turboscribe
+## Why TurboScribe
 
 - Fully local transcription workflow
 - Fast default model for everyday use
@@ -50,7 +50,7 @@ The DMG will be generated in `dist/`.
 
 ## Usage
 
-1. Open Turboscribe.
+1. Open TurboScribe.
 2. Click **Download large-v3-turbo model** (first run only).
 3. Choose an audio/video file.
 4. Click **Start transcription**.
