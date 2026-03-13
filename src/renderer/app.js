@@ -60,6 +60,10 @@ const showOutputBtn = document.getElementById('showOutputBtn');
 const transcribeProgressWrap = document.getElementById('transcribeProgressWrap');
 const transcribeBar = document.getElementById('transcribeBar');
 const transcribeMeta = document.getElementById('transcribeMeta');
+const cpuMetricLabel = document.getElementById('cpuMetricLabel');
+const cpuMetricBar = document.getElementById('cpuMetricBar');
+const powerMetricLabel = document.getElementById('powerMetricLabel');
+const powerMetricBar = document.getElementById('powerMetricBar');
 const transcribeStatusText = document.getElementById('transcribeStatusText');
 const transcribeLogEl = document.getElementById('transcribeLog');
 const transcriptBlocks = document.getElementById('transcriptBlocks');
@@ -92,6 +96,8 @@ let appState = {
 
 let themeMode = localStorage.getItem(storageKeys.themeMode) || 'system';
 let transcriptEntries = [];
+let runtimeMetricsTimer = null;
+let clipboardPasteDebounceMs = 0;
 
 const liveState = {
   active: false,
@@ -147,6 +153,73 @@ function setProgressIndeterminate(progressEl, indeterminate) {
 function setProgressValue(progressEl, percent) {
   setProgressIndeterminate(progressEl, false);
   progressEl.value = Math.max(0, Math.min(percent, 100));
+}
+
+function updateRuntimeMetricsDisplay(sample) {
+  const cpu = Number(sample?.cpuPercent || 0);
+  const watts = Number(sample?.watts || 0);
+  const cpuBarPct = Number(sample?.cpuBarPercent || 0);
+  const wattsBarPct = Number(sample?.wattsBarPercent || 0);
+
+  cpuMetricLabel.textContent = `CPU ${cpu.toFixed(1)}%`;
+  powerMetricLabel.textContent = `${watts.toFixed(1)}W`;
+
+  cpuMetricBar.style.width = `${Math.max(0, Math.min(cpuBarPct, 100)).toFixed(1)}%`;
+  powerMetricBar.style.width = `${Math.max(0, Math.min(wattsBarPct, 100)).toFixed(1)}%`;
+}
+
+function stopRuntimeMetricsPolling() {
+  if (runtimeMetricsTimer) {
+    clearInterval(runtimeMetricsTimer);
+    runtimeMetricsTimer = null;
+  }
+}
+
+async function pollRuntimeMetricsOnce() {
+  try {
+    const sample = await window.api.sampleRuntimeMetrics();
+    updateRuntimeMetricsDisplay(sample);
+  } catch {
+    // ignore transient metrics failures
+  }
+}
+
+function startRuntimeMetricsPolling() {
+  if (runtimeMetricsTimer) return;
+
+  runtimeMetricsTimer = setInterval(() => {
+    void pollRuntimeMetricsOnce();
+  }, 1000);
+
+  void pollRuntimeMetricsOnce();
+}
+
+function refreshRuntimeMetricsPolling() {
+  const shouldPoll = appState.fileTranscribing || liveState.active || liveState.stopping;
+  if (shouldPoll) {
+    startRuntimeMetricsPolling();
+  } else {
+    stopRuntimeMetricsPolling();
+    updateRuntimeMetricsDisplay({ cpuPercent: 0, watts: 0, cpuBarPercent: 0, wattsBarPercent: 0 });
+  }
+}
+
+async function tryPickFileFromClipboard() {
+  if (appState.inputMode !== 'file') return false;
+  if (appState.fileTranscribing || liveState.active || liveState.stopping) return false;
+
+  try {
+    const maybePath = await window.api.pickAudioFromClipboard();
+    if (maybePath) {
+      appState.outputPath = null;
+      setSelectedFile(maybePath);
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+
+  return false;
 }
 
 function resolveTheme() {
@@ -418,6 +491,8 @@ function updateControls() {
   installDepsBtn.disabled = appState.dependenciesInstalling || busyRecording;
   cancelDepsBtn.disabled = !appState.dependenciesInstalling;
   installBrewBtn.disabled = appState.dependenciesInstalling || busyRecording;
+
+  refreshRuntimeMetricsPolling();
 }
 
 async function refreshSystemStatus() {
@@ -1073,7 +1148,35 @@ drawerBackdrop.addEventListener('click', closeSettingsDrawer);
 window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && appState.settingsOpen) {
     closeSettingsDrawer();
+    return;
   }
+
+  const isPasteShortcut = (event.metaKey || event.ctrlKey) && String(event.key).toLowerCase() === 'v';
+  if (!isPasteShortcut) return;
+
+  const activeTag = document.activeElement?.tagName?.toLowerCase();
+  const isTypingContext =
+    activeTag === 'input' || activeTag === 'textarea' || document.activeElement?.isContentEditable;
+  if (isTypingContext) return;
+
+  const now = Date.now();
+  if (now - clipboardPasteDebounceMs < 280) return;
+  clipboardPasteDebounceMs = now;
+
+  event.preventDefault();
+  void tryPickFileFromClipboard();
+});
+
+window.addEventListener('paste', (event) => {
+  if (appState.inputMode !== 'file') return;
+
+  const activeTag = document.activeElement?.tagName?.toLowerCase();
+  const isTypingContext =
+    activeTag === 'input' || activeTag === 'textarea' || document.activeElement?.isContentEditable;
+  if (isTypingContext) return;
+
+  event.preventDefault();
+  void tryPickFileFromClipboard();
 });
 
 themeSwitch.addEventListener('change', () => {

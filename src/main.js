@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, clipboard } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -31,6 +31,24 @@ const COMMON_BIN_DIRS = [
   '/sbin',
 ];
 
+const SUPPORTED_MEDIA_EXTENSIONS = new Set([
+  '.mp3',
+  '.m4a',
+  '.wav',
+  '.aac',
+  '.mp4',
+  '.mov',
+  '.mkv',
+  '.webm',
+  '.flac',
+  '.ogg',
+  '.aiff',
+  '.aif',
+  '.m4v',
+  '.mpg',
+  '.mpeg',
+]);
+
 let mainWindow;
 let currentModelDownload = null;
 let currentTranscription = null;
@@ -38,6 +56,11 @@ let currentDependencyInstall = null;
 let currentUpdateDownload = null;
 let realtimeSession = null;
 let lastObservedRealtimeFactor = 1.0;
+let runtimeMetricsState = {
+  lastCpuUsage: process.cpuUsage(),
+  lastHrTimeNs: process.hrtime.bigint(),
+  emaCpuPercent: 0,
+};
 
 function getModelPath() {
   return path.join(os.homedir(), '.cache', 'whisper', MODEL_FILE);
@@ -122,6 +145,144 @@ async function findBinary(name) {
       }
     } catch {
       // try next shell
+    }
+  }
+
+  return null;
+}
+
+function inferPowerProfile() {
+  const model = String(os.cpus?.()?.[0]?.model || '').toLowerCase();
+
+  if (/apple\s+m[1-4]/i.test(model)) {
+    return { idleWatts: 1.5, peakWatts: 17 };
+  }
+
+  if (model.includes('intel')) {
+    return { idleWatts: 2.2, peakWatts: 28 };
+  }
+
+  return { idleWatts: 1.8, peakWatts: 22 };
+}
+
+function estimateCpuPercentFallback() {
+  const nowCpu = process.cpuUsage();
+  const nowHrNs = process.hrtime.bigint();
+
+  const cpuDeltaMicros =
+    nowCpu.user - runtimeMetricsState.lastCpuUsage.user +
+    (nowCpu.system - runtimeMetricsState.lastCpuUsage.system);
+
+  const wallDeltaMs = Number(nowHrNs - runtimeMetricsState.lastHrTimeNs) / 1e6;
+
+  runtimeMetricsState.lastCpuUsage = nowCpu;
+  runtimeMetricsState.lastHrTimeNs = nowHrNs;
+
+  if (!Number.isFinite(wallDeltaMs) || wallDeltaMs <= 0) {
+    return 0;
+  }
+
+  const cpuPercent = (cpuDeltaMicros / 1000 / wallDeltaMs) * 100;
+  return Math.max(0, cpuPercent);
+}
+
+function sampleRuntimeMetrics() {
+  let cpuPercent = 0;
+  let sampleSource = 'main-process';
+
+  try {
+    const metrics = app.getAppMetrics?.() || [];
+    const total = metrics.reduce((sum, metric) => {
+      const value = Number(metric?.cpu?.percentCPUUsage);
+      return sum + (Number.isFinite(value) && value > 0 ? value : 0);
+    }, 0);
+
+    if (Number.isFinite(total) && total > 0) {
+      cpuPercent = total;
+      sampleSource = 'app-metrics';
+      runtimeMetricsState.lastCpuUsage = process.cpuUsage();
+      runtimeMetricsState.lastHrTimeNs = process.hrtime.bigint();
+    } else {
+      cpuPercent = estimateCpuPercentFallback();
+    }
+  } catch {
+    cpuPercent = estimateCpuPercentFallback();
+  }
+
+  runtimeMetricsState.emaCpuPercent =
+    runtimeMetricsState.emaCpuPercent > 0
+      ? runtimeMetricsState.emaCpuPercent * 0.7 + cpuPercent * 0.3
+      : cpuPercent;
+
+  const { idleWatts, peakWatts } = inferPowerProfile();
+  const normalizedCpu = Math.max(0, runtimeMetricsState.emaCpuPercent);
+  const watts = idleWatts + Math.min(normalizedCpu / 100, 2.4) * (peakWatts - idleWatts);
+
+  const cpuBarPercent = Math.max(0, Math.min(normalizedCpu, 100));
+  const wattsBarPercent = Math.max(0, Math.min((watts / peakWatts) * 100, 100));
+
+  return {
+    cpuPercent: Number(normalizedCpu.toFixed(1)),
+    watts: Number(watts.toFixed(1)),
+    cpuBarPercent: Number(cpuBarPercent.toFixed(1)),
+    wattsBarPercent: Number(wattsBarPercent.toFixed(1)),
+    source: sampleSource,
+  };
+}
+
+function normalizeClipboardPath(raw) {
+  let candidate = String(raw || '').trim();
+  if (!candidate) return null;
+
+  if (
+    (candidate.startsWith('"') && candidate.endsWith('"')) ||
+    (candidate.startsWith("'") && candidate.endsWith("'"))
+  ) {
+    candidate = candidate.slice(1, -1).trim();
+  }
+
+  if (!candidate) return null;
+
+  if (candidate.startsWith('file://')) {
+    try {
+      const url = new URL(candidate);
+      candidate = decodeURIComponent(url.pathname);
+    } catch {
+      return null;
+    }
+  }
+
+  if (candidate.startsWith('~/')) {
+    candidate = path.join(os.homedir(), candidate.slice(2));
+  }
+
+  if (!path.isAbsolute(candidate)) {
+    return null;
+  }
+
+  return candidate;
+}
+
+async function resolveMediaPathFromClipboardText(text) {
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const candidate = normalizeClipboardPath(line);
+    if (!candidate) continue;
+
+    try {
+      const stat = await fsp.stat(candidate);
+      if (!stat.isFile()) continue;
+
+      const ext = path.extname(candidate).toLowerCase();
+      if (!SUPPORTED_MEDIA_EXTENSIONS.has(ext)) continue;
+
+      return candidate;
+    } catch {
+      // try next line
     }
   }
 
@@ -1138,6 +1299,16 @@ ipcMain.handle('realtime:cancel', async (_event, payload = {}) => {
   return { cancelled: true };
 });
 
+ipcMain.handle('metrics:sample', async () => {
+  return sampleRuntimeMetrics();
+});
+
+ipcMain.handle('dialog:pick-audio-from-clipboard', async () => {
+  const rawText = clipboard.readText();
+  const resolvedPath = await resolveMediaPathFromClipboardText(rawText);
+  return resolvedPath || null;
+});
+
 ipcMain.handle('dialog:pick-audio', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Choose audio/video file',
@@ -1224,6 +1395,13 @@ ipcMain.handle('transcribe:start', async (_event, payload) => {
   let hasRealProgress = false;
   let firstSegmentStartSeconds = null;
   let fallbackTimer = null;
+
+  const etaTracker = {
+    lastProcessedSeconds: 0,
+    lastElapsedSeconds: 0,
+    speedEma: 0,
+    lastEtaSeconds: null,
+  };
 
   const estimatedRealtimeFactor = Math.min(Math.max(lastObservedRealtimeFactor || 1.0, 0.35), 3.0);
   const fallbackEstimateTotalSeconds = Math.max(12, durationSeconds * estimatedRealtimeFactor + 4);
@@ -1312,23 +1490,58 @@ ipcMain.handle('transcribe:start', async (_event, payload) => {
 
     processedSeconds = Math.max(0, Math.min(processedSeconds, durationSeconds));
 
-    const progress = formatTranscriptionProgress({
-      processedSeconds,
-      durationSeconds,
-      startedAtMs,
-    });
+    const elapsedSeconds = (Date.now() - startedAtMs) / 1000;
+    const progressRatio = durationSeconds > 0 ? Math.min(processedSeconds / durationSeconds, 1) : 0;
+
+    const processedDelta = processedSeconds - etaTracker.lastProcessedSeconds;
+    const elapsedDelta = Math.max(elapsedSeconds - etaTracker.lastElapsedSeconds, 0);
+
+    if (processedDelta > 0.015 && elapsedDelta > 0.05) {
+      const instantSpeed = processedDelta / elapsedDelta;
+      etaTracker.speedEma = etaTracker.speedEma > 0 ? etaTracker.speedEma * 0.78 + instantSpeed * 0.22 : instantSpeed;
+    }
+
+    const remainingSeconds = Math.max(durationSeconds - processedSeconds, 0);
+    let etaSeconds =
+      etaTracker.speedEma > 0.01 ? Math.max(remainingSeconds / etaTracker.speedEma, 0) : null;
+
+    if ((!Number.isFinite(etaSeconds) || etaSeconds === null) && Number.isFinite(etaTracker.lastEtaSeconds)) {
+      etaSeconds = Math.max(etaTracker.lastEtaSeconds - elapsedDelta, 0);
+    }
+
+    if (Number.isFinite(etaSeconds) && Number.isFinite(etaTracker.lastEtaSeconds)) {
+      const allowedIncrease = progressRatio > 0.9 ? 0.65 : 2.8;
+      etaSeconds = Math.min(etaSeconds, etaTracker.lastEtaSeconds + allowedIncrease);
+    }
+
+    if (progressRatio > 0.965 && Number.isFinite(etaSeconds)) {
+      etaSeconds = Math.min(etaSeconds, Math.max((1 - progressRatio) * 18, 0));
+    }
+
+    if (progressRatio >= 0.999) {
+      etaSeconds = 0;
+    }
+
+    if (Number.isFinite(etaSeconds)) {
+      etaTracker.lastEtaSeconds = etaSeconds;
+    }
+
+    etaTracker.lastProcessedSeconds = processedSeconds;
+    etaTracker.lastElapsedSeconds = elapsedSeconds;
 
     hasRealProgress = true;
 
     send('transcribe:progress', {
-      ...progress,
+      progress: progressRatio,
+      etaSeconds,
+      elapsedSeconds,
       processedSeconds,
       durationSeconds,
       estimated: false,
     });
 
     send('transcribe:status', {
-      message: `Transcribing… ${Math.round(progress.progress * 100)}%`,
+      message: `Transcribing… ${Math.round(progressRatio * 100)}%`,
     });
   };
 

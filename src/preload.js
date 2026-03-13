@@ -22,7 +22,10 @@ contextBridge.exposeInMainWorld('api', {
   stopRealtimeSession: (payload) => ipcRenderer.invoke('realtime:stop', payload),
   cancelRealtimeSession: (payload) => ipcRenderer.invoke('realtime:cancel', payload),
 
+  sampleRuntimeMetrics: () => ipcRenderer.invoke('metrics:sample'),
+
   pickAudioFile: () => ipcRenderer.invoke('dialog:pick-audio'),
+  pickAudioFromClipboard: () => ipcRenderer.invoke('dialog:pick-audio-from-clipboard'),
   startTranscription: (audioPath) => ipcRenderer.invoke('transcribe:start', { audioPath }),
   cancelTranscription: () => ipcRenderer.invoke('transcribe:cancel'),
   showInFinder: (targetPath) => ipcRenderer.invoke('shell:show-item', { path: targetPath }),
