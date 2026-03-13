@@ -36,6 +36,7 @@ let currentModelDownload = null;
 let currentTranscription = null;
 let currentDependencyInstall = null;
 let currentUpdateDownload = null;
+let lastObservedRealtimeFactor = 1.0;
 
 function getModelPath() {
   return path.join(os.homedir(), '.cache', 'whisper', MODEL_FILE);
@@ -227,23 +228,45 @@ function attachLineParser(stream, onLine) {
   });
 }
 
-async function getAudioDurationSeconds(ffprobePath, audioPath) {
-  const { stdout } = await execFileAsync(ffprobePath, [
-    '-v',
-    'error',
-    '-show_entries',
-    'format=duration',
-    '-of',
-    'default=noprint_wrappers=1:nokey=1',
-    audioPath,
-  ]);
+async function getMediaTimingInfo(ffprobePath, mediaPath) {
+  const { stdout } = await execFileAsync(
+    ffprobePath,
+    [
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration,start_time',
+      '-of',
+      'default=noprint_wrappers=1:nokey=0',
+      mediaPath,
+    ],
+    {
+      env: buildExecutionEnv(),
+    },
+  );
 
-  const parsed = Number(stdout.trim());
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error('Could not determine audio duration (ffprobe returned invalid output).');
+  const parsed = {
+    duration: null,
+    start_time: null,
+  };
+
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    const [key, value] = line.split('=');
+    if (!key || typeof value === 'undefined') continue;
+    parsed[key.trim()] = value.trim();
   }
 
-  return parsed;
+  const durationSeconds = Number(parsed.duration);
+  const startTimeSeconds = Number(parsed.start_time);
+
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    throw new Error('Could not determine media duration (ffprobe returned invalid output).');
+  }
+
+  return {
+    durationSeconds,
+    startTimeSeconds: Number.isFinite(startTimeSeconds) ? startTimeSeconds : 0,
+  };
 }
 
 function downloadFileWithProgress(url, outputPath, expectedSha256, onProgress) {
@@ -768,6 +791,8 @@ ipcMain.handle('transcribe:start', async (_event, payload) => {
   const audioPath = payload?.audioPath;
   if (!audioPath) throw new Error('No audio file selected.');
 
+  send('transcribe:status', { message: 'Checking Whisper + FFmpeg installation…' });
+
   const [whisperPath, ffprobePath] = await Promise.all([findBinary('whisper'), findBinary('ffprobe')]);
 
   if (!whisperPath) {
@@ -777,12 +802,17 @@ ipcMain.handle('transcribe:start', async (_event, payload) => {
     throw new Error('ffprobe is not installed. Install FFmpeg with: brew install ffmpeg');
   }
 
+  send('transcribe:status', { message: 'Checking Whisper model files…' });
   const modelStatus = await getModelStatus();
   if (!modelStatus.installed) {
     throw new Error('Turbo model not found. Download the model first.');
   }
 
-  const durationSeconds = await getAudioDurationSeconds(ffprobePath, audioPath);
+  send('transcribe:status', { message: 'Reading media timing info…' });
+  const mediaInfo = await getMediaTimingInfo(ffprobePath, audioPath);
+  const durationSeconds = mediaInfo.durationSeconds;
+  const mediaStartOffsetSeconds = Math.max(0, mediaInfo.startTimeSeconds || 0);
+
   const outputDir = path.join(app.getPath('documents'), 'TurboScribe', 'Transcripts');
   await fsp.mkdir(outputDir, { recursive: true });
 
@@ -800,8 +830,18 @@ ipcMain.handle('transcribe:start', async (_event, payload) => {
     'True',
   ];
 
+  send('transcribe:status', {
+    message: `Launching Whisper (duration ${durationSeconds.toFixed(2)}s, start offset ${mediaStartOffsetSeconds.toFixed(2)}s)…`,
+  });
+
   const startedAtMs = Date.now();
   const transcriptLines = [];
+  let hasRealProgress = false;
+  let firstSegmentStartSeconds = null;
+  let fallbackTimer = null;
+
+  const estimatedRealtimeFactor = Math.min(Math.max(lastObservedRealtimeFactor || 1.0, 0.35), 3.0);
+  const fallbackEstimateTotalSeconds = Math.max(12, durationSeconds * estimatedRealtimeFactor + 4);
 
   const child = spawn(whisperPath, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -814,10 +854,42 @@ ipcMain.handle('transcribe:start', async (_event, payload) => {
     durationSeconds,
     outputDir,
     audioPath,
+    fallbackTimer,
   };
+
+  const emitEstimatedProgress = () => {
+    if (!currentTranscription || hasRealProgress) return;
+
+    const elapsedSeconds = (Date.now() - startedAtMs) / 1000;
+    const progress = Math.min(elapsedSeconds / fallbackEstimateTotalSeconds, 0.94);
+    const etaSeconds = Math.max(fallbackEstimateTotalSeconds - elapsedSeconds, 0);
+
+    send('transcribe:progress', {
+      progress,
+      etaSeconds,
+      elapsedSeconds,
+      processedSeconds: progress * durationSeconds,
+      durationSeconds,
+      estimated: true,
+    });
+  };
+
+  fallbackTimer = setInterval(emitEstimatedProgress, 1000);
+  currentTranscription.fallbackTimer = fallbackTimer;
+  emitEstimatedProgress();
+
+  child.on('spawn', () => {
+    send('transcribe:status', {
+      message: `Whisper process started (PID ${child.pid}). Detecting language + processing segments…`,
+    });
+  });
 
   const handleLogLine = (line) => {
     send('transcribe:log', { line });
+
+    if (/Detecting language/i.test(line)) {
+      send('transcribe:status', { message: 'Detecting spoken language…' });
+    }
 
     if (/Detected language/i.test(line)) {
       send('transcribe:status', { message: line });
@@ -826,21 +898,52 @@ ipcMain.handle('transcribe:start', async (_event, payload) => {
     const segment = parseSegmentLine(line);
     if (!segment) return;
 
+    if (firstSegmentStartSeconds === null) {
+      firstSegmentStartSeconds = segment.startSeconds;
+    }
+
     if (segment.text) {
       transcriptLines.push(segment.text);
       send('transcribe:segment', segment);
     }
 
+    let processedSeconds = segment.endSeconds - mediaStartOffsetSeconds;
+
+    if (
+      !Number.isFinite(processedSeconds) ||
+      processedSeconds < 0 ||
+      processedSeconds > durationSeconds + 2
+    ) {
+      processedSeconds = segment.endSeconds - (firstSegmentStartSeconds || 0);
+    }
+
+    if (
+      !Number.isFinite(processedSeconds) ||
+      processedSeconds < 0 ||
+      processedSeconds > durationSeconds + 2
+    ) {
+      processedSeconds = segment.endSeconds;
+    }
+
+    processedSeconds = Math.max(0, Math.min(processedSeconds, durationSeconds));
+
     const progress = formatTranscriptionProgress({
-      processedSeconds: segment.endSeconds,
+      processedSeconds,
       durationSeconds,
       startedAtMs,
     });
 
+    hasRealProgress = true;
+
     send('transcribe:progress', {
       ...progress,
-      processedSeconds: segment.endSeconds,
+      processedSeconds,
       durationSeconds,
+      estimated: false,
+    });
+
+    send('transcribe:status', {
+      message: `Transcribing… ${Math.round(progress.progress * 100)}%`,
     });
   };
 
@@ -848,34 +951,55 @@ ipcMain.handle('transcribe:start', async (_event, payload) => {
   attachLineParser(child.stderr, handleLogLine);
 
   child.on('error', (error) => {
+    if (fallbackTimer) {
+      clearInterval(fallbackTimer);
+      fallbackTimer = null;
+    }
+
     send('transcribe:error', { message: error.message });
     currentTranscription = null;
   });
 
   child.on('close', async (code) => {
+    if (fallbackTimer) {
+      clearInterval(fallbackTimer);
+      fallbackTimer = null;
+    }
+
     const baseName = path.parse(audioPath).name;
     const outputPath = path.join(outputDir, `${baseName}.txt`);
 
     if (code === 0) {
+      send('transcribe:status', { message: 'Finalizing transcript output…' });
+
       let transcript = transcriptLines.join('\n').trim();
 
       if (!transcript && (await fileExists(outputPath))) {
         transcript = (await fsp.readFile(outputPath, 'utf8')).trim();
       }
 
+      const elapsedSeconds = (Date.now() - startedAtMs) / 1000;
+      if (durationSeconds > 0 && Number.isFinite(elapsedSeconds) && elapsedSeconds > 0) {
+        const observed = elapsedSeconds / durationSeconds;
+        if (Number.isFinite(observed) && observed > 0.05 && observed < 10) {
+          lastObservedRealtimeFactor = lastObservedRealtimeFactor * 0.7 + observed * 0.3;
+        }
+      }
+
       send('transcribe:progress', {
         progress: 1,
         etaSeconds: 0,
-        elapsedSeconds: (Date.now() - startedAtMs) / 1000,
+        elapsedSeconds,
         processedSeconds: durationSeconds,
         durationSeconds,
+        estimated: false,
       });
 
       send('transcribe:done', {
         outputPath,
         outputDir,
         transcript,
-        elapsedSeconds: (Date.now() - startedAtMs) / 1000,
+        elapsedSeconds,
       });
     } else {
       send('transcribe:error', {
@@ -889,12 +1013,17 @@ ipcMain.handle('transcribe:start', async (_event, payload) => {
   return {
     started: true,
     durationSeconds,
+    startOffsetSeconds: mediaStartOffsetSeconds,
     outputDir,
   };
 });
 
 ipcMain.handle('transcribe:cancel', async () => {
   if (!currentTranscription?.process) return { cancelled: false };
+
+  if (currentTranscription.fallbackTimer) {
+    clearInterval(currentTranscription.fallbackTimer);
+  }
 
   currentTranscription.process.kill('SIGTERM');
   send('transcribe:status', { message: 'Transcription cancelled.' });
