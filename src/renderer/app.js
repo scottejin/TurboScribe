@@ -96,8 +96,11 @@ let appState = {
 
 let themeMode = localStorage.getItem(storageKeys.themeMode) || 'system';
 let transcriptEntries = [];
+let fullTranscriptText = '';
 let runtimeMetricsTimer = null;
 let clipboardPasteDebounceMs = 0;
+
+const MAX_VISIBLE_TRANSCRIPT_ENTRIES = 140;
 
 const liveState = {
   active: false,
@@ -288,13 +291,25 @@ function renderTranscriptBoard() {
         ? 'Start live recording to see realtime transcript blocks here.'
         : 'Pick a file and start transcription to populate this transcript view.';
     transcriptBlocks.appendChild(empty);
-    transcriptArea.value = '';
+    transcriptArea.value = fullTranscriptText || '';
     return;
+  }
+
+  const hiddenCount = Math.max(transcriptEntries.length - MAX_VISIBLE_TRANSCRIPT_ENTRIES, 0);
+  const visibleEntries = hiddenCount
+    ? transcriptEntries.slice(-MAX_VISIBLE_TRANSCRIPT_ENTRIES)
+    : transcriptEntries;
+
+  if (hiddenCount > 0) {
+    const notice = document.createElement('div');
+    notice.className = 'transcript-empty';
+    notice.textContent = `${hiddenCount} earlier transcript lines are hidden here. Full transcript is saved as TXT on Desktop.`;
+    transcriptBlocks.appendChild(notice);
   }
 
   const lines = [];
 
-  for (const entry of transcriptEntries) {
+  for (const entry of visibleEntries) {
     const card = document.createElement('article');
     card.className = `transcript-item${entry.provisional ? ' provisional' : ''}`;
 
@@ -323,16 +338,16 @@ function renderTranscriptBoard() {
     card.appendChild(text);
 
     transcriptBlocks.appendChild(card);
-
     lines.push(entry.text);
   }
 
   transcriptBlocks.scrollTop = transcriptBlocks.scrollHeight;
-  transcriptArea.value = lines.join('\n');
+  transcriptArea.value = fullTranscriptText || lines.join('\n');
 }
 
 function resetTranscriptBoard() {
   transcriptEntries = [];
+  fullTranscriptText = '';
   renderTranscriptBoard();
 }
 
@@ -348,35 +363,50 @@ function addTranscriptEntry(entry) {
   if (!normalized.text) return;
 
   transcriptEntries.push(normalized);
+
+  const shouldAppendToFull = normalized.provisional || appState.fileTranscribing || liveState.active;
+  if (shouldAppendToFull) {
+    fullTranscriptText = fullTranscriptText ? `${fullTranscriptText}\n${normalized.text}` : normalized.text;
+  } else if (!fullTranscriptText) {
+    fullTranscriptText = transcriptEntries.map((item) => item.text).join('\n');
+  }
+
   renderTranscriptBoard();
 }
 
 function replaceTranscriptWithFinal(segments, fullText) {
+  fullTranscriptText = String(fullText || '').trim();
   transcriptEntries = [];
 
   if (Array.isArray(segments) && segments.length) {
-    segments.forEach((segment) => {
-      addTranscriptEntry({
-        text: segment.text,
+    transcriptEntries = segments
+      .map((segment) => ({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        text: String(segment.text || '').trim(),
         startSeconds: Number(segment.startSeconds),
         endSeconds: Number(segment.endSeconds),
         provisional: false,
-      });
-    });
+      }))
+      .filter((segment) => segment.text);
+
+    renderTranscriptBoard();
     return;
   }
 
-  const lines = String(fullText || '')
+  const lines = fullTranscriptText
     .split(/\r?\n+/)
     .map((line) => line.trim())
     .filter(Boolean);
 
-  for (const line of lines) {
-    addTranscriptEntry({
-      text: line,
-      provisional: false,
-    });
-  }
+  transcriptEntries = lines.map((line) => ({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    text: line,
+    startSeconds: Number.NaN,
+    endSeconds: Number.NaN,
+    provisional: false,
+  }));
+
+  renderTranscriptBoard();
 }
 
 function updateLiveElapsed() {
@@ -401,6 +431,8 @@ function appendDepsLog(line, stream = 'stdout') {
 }
 
 function appendTranscribeLog(line) {
+  if (!transcribeLogEl) return;
+
   const next = `${transcribeLogEl.textContent}${transcribeLogEl.textContent ? '\n' : ''}${line}`;
   transcribeLogEl.textContent = next.slice(-30000);
   transcribeLogEl.scrollTop = transcribeLogEl.scrollHeight;
@@ -618,7 +650,9 @@ async function onStartFileTranscription() {
   if (!appState.selectedFile) return;
 
   resetTranscriptBoard();
-  transcribeLogEl.textContent = 'Starting file transcription…';
+  if (transcribeLogEl) {
+    transcribeLogEl.textContent = 'Starting file transcription…';
+  }
   appState.outputPath = null;
 
   transcribeProgressWrap.classList.remove('hidden');
@@ -735,7 +769,9 @@ async function onStartLiveRecording() {
 
   appState.outputPath = null;
   resetTranscriptBoard();
-  transcribeLogEl.textContent = 'Starting live recording session…';
+  if (transcribeLogEl) {
+    transcribeLogEl.textContent = 'Starting live recording session…';
+  }
 
   const sourceMode = getSelectedLiveSource();
   const task = liveTaskSelect.value === 'translate' ? 'translate' : 'transcribe';
@@ -1059,14 +1095,16 @@ window.api.onTranscribeProgress((evt) => {
 window.api.onTranscribeDone((evt) => {
   setFileTranscribing(false);
   setProgressValue(transcribeBar, 100);
-  setFileStatus(`Done in ${formatDuration(evt.elapsedSeconds || 0)}`);
 
-  if (evt.transcript && !transcriptEntries.length) {
+  if (evt.transcript) {
     replaceTranscriptWithFinal([], evt.transcript);
   }
 
   if (evt.outputPath) {
     appState.outputPath = evt.outputPath;
+    setFileStatus(`Done in ${formatDuration(evt.elapsedSeconds || 0)} • TXT saved on Desktop`);
+  } else {
+    setFileStatus(`Done in ${formatDuration(evt.elapsedSeconds || 0)}`);
   }
 
   updateControls();
@@ -1129,6 +1167,7 @@ window.api.onRealtimeFinal((evt) => {
   replaceTranscriptWithFinal(evt.segments, evt.transcript);
   if (evt.outputPath) {
     appState.outputPath = evt.outputPath;
+    setFileStatus(`Live transcription finalized • TXT saved on Desktop`);
   }
   setProgressValue(transcribeBar, 100);
   transcribeMeta.textContent = `Finalized • ${formatDuration(evt.elapsedSeconds || 0)}`;
