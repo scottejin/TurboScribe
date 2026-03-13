@@ -1,8 +1,25 @@
+const appVersionEl = document.getElementById('appVersion');
+const updateSourceEl = document.getElementById('updateSource');
+
 const whisperStatusEl = document.getElementById('whisperStatus');
 const ffprobeStatusEl = document.getElementById('ffprobeStatus');
 const modelStatusEl = document.getElementById('modelStatus');
-const appVersionEl = document.getElementById('appVersion');
-const updateSourceEl = document.getElementById('updateSource');
+
+const settingsBtn = document.getElementById('settingsBtn');
+const settingsCloseBtn = document.getElementById('settingsCloseBtn');
+const settingsDrawer = document.getElementById('settingsDrawer');
+const drawerBackdrop = document.getElementById('drawerBackdrop');
+
+const themeSwitch = document.getElementById('themeSwitch');
+const themeAutoBtn = document.getElementById('themeAutoBtn');
+const themeModeLabel = document.getElementById('themeModeLabel');
+
+const onboardingPanel = document.getElementById('onboardingPanel');
+const onboardingDepsStep = document.getElementById('onboardingDepsStep');
+const onboardingModelStep = document.getElementById('onboardingModelStep');
+const onboardingReadyStep = document.getElementById('onboardingReadyStep');
+const onboardingOpenSettingsBtn = document.getElementById('onboardingOpenSettingsBtn');
+const onboardingDoneBtn = document.getElementById('onboardingDoneBtn');
 
 const downloadModelBtn = document.getElementById('downloadModelBtn');
 const modelDownloadWrap = document.getElementById('modelDownloadWrap');
@@ -25,14 +42,21 @@ const pickFileBtn = document.getElementById('pickFileBtn');
 const selectedFileEl = document.getElementById('selectedFile');
 const startBtn = document.getElementById('startBtn');
 const cancelBtn = document.getElementById('cancelBtn');
+const showOutputBtn = document.getElementById('showOutputBtn');
 
 const transcribeProgressWrap = document.getElementById('transcribeProgressWrap');
 const transcribeBar = document.getElementById('transcribeBar');
 const transcribeMeta = document.getElementById('transcribeMeta');
 const transcribeStatusText = document.getElementById('transcribeStatusText');
-
+const transcribeLogEl = document.getElementById('transcribeLog');
 const transcriptArea = document.getElementById('transcriptArea');
-const showOutputBtn = document.getElementById('showOutputBtn');
+
+const storageKeys = {
+  themeMode: 'turboscribe.themeMode',
+  onboardingDone: 'turboscribe.onboardingDone',
+};
+
+const mediaTheme = window.matchMedia('(prefers-color-scheme: dark)');
 
 let appState = {
   appVersion: '—',
@@ -48,7 +72,10 @@ let appState = {
   updateInfo: null,
   updateDownloading: false,
   dependenciesInstalling: false,
+  settingsOpen: false,
 };
+
+let themeMode = localStorage.getItem(storageKeys.themeMode) || 'system';
 
 function formatBytes(bytes) {
   if (!bytes || bytes <= 0) return '0 B';
@@ -70,6 +97,58 @@ function formatDuration(seconds) {
   }
 
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function setProgressIndeterminate(progressEl, indeterminate) {
+  if (indeterminate) {
+    progressEl.removeAttribute('value');
+  } else if (!progressEl.hasAttribute('value')) {
+    progressEl.setAttribute('value', '0');
+    progressEl.value = 0;
+  }
+}
+
+function setProgressValue(progressEl, percent) {
+  setProgressIndeterminate(progressEl, false);
+  progressEl.value = Math.max(0, Math.min(percent, 100));
+}
+
+function resolveTheme() {
+  if (themeMode === 'dark') return 'dark';
+  if (themeMode === 'light') return 'light';
+  return mediaTheme.matches ? 'dark' : 'light';
+}
+
+function applyTheme() {
+  const resolved = resolveTheme();
+  document.documentElement.dataset.theme = resolved;
+  themeSwitch.checked = resolved === 'dark';
+
+  if (themeMode === 'system') {
+    themeModeLabel.textContent = `Theme: Auto (${resolved})`;
+  } else {
+    themeModeLabel.textContent = `Theme: ${resolved}`;
+  }
+}
+
+function setThemeMode(mode) {
+  themeMode = mode;
+  localStorage.setItem(storageKeys.themeMode, mode);
+  applyTheme();
+}
+
+function openSettingsDrawer() {
+  appState.settingsOpen = true;
+  settingsDrawer.classList.add('open');
+  settingsDrawer.setAttribute('aria-hidden', 'false');
+  drawerBackdrop.classList.remove('hidden');
+}
+
+function closeSettingsDrawer() {
+  appState.settingsOpen = false;
+  settingsDrawer.classList.remove('open');
+  settingsDrawer.setAttribute('aria-hidden', 'true');
+  drawerBackdrop.classList.add('hidden');
 }
 
 function updateControls() {
@@ -96,6 +175,12 @@ function updateControls() {
   installDepsBtn.disabled = appState.dependenciesInstalling || appState.transcribing;
   cancelDepsBtn.disabled = !appState.dependenciesInstalling;
   installBrewBtn.disabled = appState.dependenciesInstalling;
+
+  onboardingDoneBtn.disabled = !(
+    appState.whisperInstalled &&
+    appState.ffprobeInstalled &&
+    appState.modelInstalled
+  );
 }
 
 function renderSetupStatus() {
@@ -119,6 +204,35 @@ function renderSetupStatus() {
     : 'Download large-v3-turbo model';
 }
 
+function renderOnboarding() {
+  const depsReady = appState.whisperInstalled && appState.ffprobeInstalled;
+  const modelReady = appState.modelInstalled;
+  const allReady = depsReady && modelReady;
+
+  onboardingDepsStep.classList.toggle('done', depsReady);
+  onboardingModelStep.classList.toggle('done', modelReady);
+  onboardingReadyStep.classList.toggle('done', allReady);
+
+  const done = localStorage.getItem(storageKeys.onboardingDone) === '1';
+  if (done) {
+    onboardingPanel.classList.add('hidden');
+    return;
+  }
+
+  onboardingPanel.classList.remove('hidden');
+  onboardingDoneBtn.textContent = allReady
+    ? 'Finish onboarding'
+    : 'Finish onboarding (complete setup first)';
+}
+
+function completeOnboarding() {
+  const ready = appState.whisperInstalled && appState.ffprobeInstalled && appState.modelInstalled;
+  if (!ready) return;
+
+  localStorage.setItem(storageKeys.onboardingDone, '1');
+  renderOnboarding();
+}
+
 async function refreshSystemStatus() {
   try {
     const status = await window.api.getSystemStatus();
@@ -132,6 +246,7 @@ async function refreshSystemStatus() {
     appState.modelSizeBytes = Number(status.model?.sizeBytes || 0);
 
     renderSetupStatus();
+    renderOnboarding();
     updateControls();
   } catch (error) {
     transcribeStatusText.textContent = `Status check failed: ${error.message}`;
@@ -141,6 +256,7 @@ async function refreshSystemStatus() {
 function setSelectedFile(filePath) {
   appState.selectedFile = filePath;
   selectedFileEl.textContent = filePath || 'No file selected';
+  selectedFileEl.title = filePath || '';
   updateControls();
 }
 
@@ -152,10 +268,14 @@ function setTranscribing(flag) {
 function appendDepsLog(line, stream = 'stdout') {
   const prefix = stream === 'stderr' ? '[err]' : '[out]';
   const next = `${depsLogEl.textContent}${depsLogEl.textContent ? '\n' : ''}${prefix} ${line}`;
-
-  // Keep log bounded
-  depsLogEl.textContent = next.slice(-16000);
+  depsLogEl.textContent = next.slice(-24000);
   depsLogEl.scrollTop = depsLogEl.scrollHeight;
+}
+
+function appendTranscribeLog(line) {
+  const next = `${transcribeLogEl.textContent}${transcribeLogEl.textContent ? '\n' : ''}${line}`;
+  transcribeLogEl.textContent = next.slice(-24000);
+  transcribeLogEl.scrollTop = transcribeLogEl.scrollHeight;
 }
 
 async function onPickFile() {
@@ -181,7 +301,7 @@ async function onDownloadModel() {
 
 async function onCheckUpdates() {
   updateWrap.classList.remove('hidden');
-  updateBar.value = 0;
+  setProgressValue(updateBar, 0);
   updateMeta.textContent = 'Checking latest release…';
 
   try {
@@ -197,7 +317,7 @@ async function onDownloadAndOpenUpdate() {
   if (!appState.updateInfo?.updateAvailable) return;
 
   updateWrap.classList.remove('hidden');
-  updateBar.value = 0;
+  setProgressValue(updateBar, 0);
   updateMeta.textContent = 'Downloading update installer…';
 
   appState.updateDownloading = true;
@@ -238,7 +358,8 @@ async function onInstallHomebrewGuided() {
     if (result?.brewPresent) {
       depsStatusText.textContent = 'Homebrew already installed.';
     } else if (result?.opened) {
-      depsStatusText.textContent = 'Terminal opened: complete Homebrew install there, then retry dependencies.';
+      depsStatusText.textContent =
+        'Terminal opened. Complete Homebrew install there, then run dependency install again.';
     }
   } catch (error) {
     depsStatusText.textContent = `Failed to open Homebrew installer: ${error.message}`;
@@ -249,18 +370,20 @@ async function onStartTranscription() {
   if (!appState.selectedFile) return;
 
   transcriptArea.value = '';
+  transcribeLogEl.textContent = 'Starting transcription…';
   appState.outputPath = null;
+
   transcribeProgressWrap.classList.remove('hidden');
-  transcribeBar.value = 0;
-  transcribeMeta.textContent = 'Starting…';
-  transcribeStatusText.textContent = 'Launching Whisper…';
+  setProgressIndeterminate(transcribeBar, true);
+  transcribeMeta.textContent = 'Launching Whisper…';
+  transcribeStatusText.textContent = 'Preparing transcription pipeline…';
 
   setTranscribing(true);
 
   try {
     const started = await window.api.startTranscription(appState.selectedFile);
     if (started?.durationSeconds) {
-      transcribeMeta.textContent = `0% • ETA — • Duration ${formatDuration(started.durationSeconds)}`;
+      transcribeMeta.textContent = `0.0% • ETA calculating… • 00:00/${formatDuration(started.durationSeconds)}`;
     }
   } catch (error) {
     setTranscribing(false);
@@ -321,10 +444,10 @@ window.api.onUpdaterState((evt) => {
     appState.updateDownloading = false;
 
     if (evt.updateAvailable) {
-      updateBar.value = 0;
+      setProgressValue(updateBar, 0);
       updateMeta.textContent = `Update found: ${evt.currentVersion} → ${evt.latestVersion}`;
     } else {
-      updateBar.value = 100;
+      setProgressValue(updateBar, 100);
       updateMeta.textContent = `Up to date (v${evt.currentVersion})`;
     }
   }
@@ -336,7 +459,7 @@ window.api.onUpdaterState((evt) => {
 
   if (evt.state === 'downloaded') {
     appState.updateDownloading = false;
-    updateBar.value = 100;
+    setProgressValue(updateBar, 100);
     updateMeta.textContent = `Downloaded ${evt.assetName}`;
   }
 
@@ -357,7 +480,7 @@ window.api.onUpdaterDownloadProgress((evt) => {
   updateWrap.classList.remove('hidden');
 
   const percent = Number(evt.percent || 0);
-  updateBar.value = Math.max(0, Math.min(percent, 100));
+  setProgressValue(updateBar, percent);
 
   const downloaded = formatBytes(evt.downloadedBytes || 0);
   const total = evt.totalBytes ? formatBytes(evt.totalBytes) : 'unknown';
@@ -405,11 +528,16 @@ window.api.onDependenciesState(async (evt) => {
     depsStatusText.textContent = evt.message || 'Homebrew already installed';
   }
 
+  renderOnboarding();
   updateControls();
 });
 
 window.api.onDependenciesLog((evt) => {
   appendDepsLog(evt.line, evt.stream);
+});
+
+window.api.onTranscribeLog((evt) => {
+  appendTranscribeLog(evt.line);
 });
 
 window.api.onTranscribeStatus((evt) => {
@@ -422,17 +550,22 @@ window.api.onTranscribeSegment((segment) => {
 
 window.api.onTranscribeProgress((evt) => {
   const pct = Math.max(0, Math.min((evt.progress || 0) * 100, 100));
-  transcribeBar.value = pct;
-
-  const eta = Number.isFinite(evt.etaSeconds) ? formatDuration(evt.etaSeconds) : '—';
+  const eta = Number.isFinite(evt.etaSeconds) ? formatDuration(evt.etaSeconds) : 'calculating…';
   const processed = formatDuration(evt.processedSeconds || 0);
   const total = formatDuration(evt.durationSeconds || 0);
 
-  transcribeMeta.textContent = `${pct.toFixed(1)}% • ETA ${eta} • ${processed}/${total}`;
+  if (evt.estimated) {
+    setProgressValue(transcribeBar, pct);
+    transcribeMeta.textContent = `${pct.toFixed(1)}% • ETA ${eta} • ${processed}/${total} (estimated)`;
+  } else {
+    setProgressValue(transcribeBar, pct);
+    transcribeMeta.textContent = `${pct.toFixed(1)}% • ETA ${eta} • ${processed}/${total}`;
+  }
 });
 
 window.api.onTranscribeDone((evt) => {
   setTranscribing(false);
+  setProgressValue(transcribeBar, 100);
   transcribeStatusText.textContent = `Done in ${formatDuration(evt.elapsedSeconds || 0)}`;
 
   if (evt.transcript && !transcriptArea.value.trim()) {
@@ -444,12 +577,41 @@ window.api.onTranscribeDone((evt) => {
   }
 
   updateControls();
+  renderOnboarding();
 });
 
 window.api.onTranscribeError((evt) => {
   setTranscribing(false);
   transcribeStatusText.textContent = `Error: ${evt.message}`;
+  updateControls();
 });
+
+settingsBtn.addEventListener('click', openSettingsDrawer);
+settingsCloseBtn.addEventListener('click', closeSettingsDrawer);
+drawerBackdrop.addEventListener('click', closeSettingsDrawer);
+
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && appState.settingsOpen) {
+    closeSettingsDrawer();
+  }
+});
+
+themeSwitch.addEventListener('change', () => {
+  setThemeMode(themeSwitch.checked ? 'dark' : 'light');
+});
+
+themeAutoBtn.addEventListener('click', () => {
+  setThemeMode('system');
+});
+
+mediaTheme.addEventListener('change', () => {
+  if (themeMode === 'system') {
+    applyTheme();
+  }
+});
+
+onboardingOpenSettingsBtn.addEventListener('click', openSettingsDrawer);
+onboardingDoneBtn.addEventListener('click', completeOnboarding);
 
 showOutputBtn.addEventListener('click', async () => {
   if (!appState.outputPath) return;
@@ -466,5 +628,6 @@ installBrewBtn.addEventListener('click', onInstallHomebrewGuided);
 startBtn.addEventListener('click', onStartTranscription);
 cancelBtn.addEventListener('click', onCancelTranscription);
 
-depsLogEl.textContent = 'Dependency installer logs will appear here.';
+applyTheme();
 refreshSystemStatus();
+updateControls();

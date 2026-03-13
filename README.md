@@ -5,10 +5,15 @@ TurboScribe is a macOS desktop app for local speech-to-text transcription using 
 ## Features
 
 - Native desktop GUI (Electron)
+- Top-right **Settings drawer** with all setup/update controls in one place
+- One-time **onboarding setup** flow for first-time users
+- Top-bar **Dark/Light switch** with **system-theme auto mode**
+- Full-width, space-efficient transcription layout
 - One-click download of Whisper `large-v3-turbo`
 - File picker for audio/video input
 - Live transcript updates while processing
-- Progress bar with ETA during transcription
+- Improved Whisper launch/runtime status details
+- Progress bar with ETA during transcription (including estimated fallback when segment timing is still being calibrated)
 - Built-in **release updater** (checks GitHub releases, downloads installer, opens it)
 - Built-in **dependency installer** for `openai-whisper` and `ffmpeg`
 - Guided Homebrew bootstrap button (if Homebrew is missing)

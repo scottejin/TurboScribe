@@ -7,116 +7,140 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main class="app">
-      <header class="hero">
-        <h1>TurboScribe</h1>
-        <p class="subtitle">Local transcription with Whisper large-v3-turbo</p>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <h1>TurboScribe</h1>
+          <p>Local transcription with Whisper large-v3-turbo</p>
+        </div>
+
+        <div class="top-actions">
+          <div class="theme-control">
+            <span id="themeModeLabel" class="theme-mode-label">Theme: Auto</span>
+            <label class="switch" title="Dark / Light mode">
+              <input type="checkbox" id="themeSwitch" />
+              <span class="slider"></span>
+            </label>
+            <button id="themeAutoBtn" class="ghost">Auto</button>
+          </div>
+
+          <button id="settingsBtn" class="primary">Settings</button>
+        </div>
       </header>
 
-      <section class="card" id="systemCard">
-        <h2>Setup</h2>
-        <div class="kv">
-          <span>Whisper CLI</span>
-          <span id="whisperStatus">Checking…</span>
-        </div>
-        <div class="kv">
-          <span>ffprobe (FFmpeg)</span>
-          <span id="ffprobeStatus">Checking…</span>
-        </div>
-        <div class="kv">
-          <span>Turbo model</span>
-          <span id="modelStatus">Checking…</span>
-        </div>
-        <div class="inline-actions">
-          <button id="downloadModelBtn" class="primary">Download large-v3-turbo model</button>
-        </div>
+      <main class="workspace">
+        <section id="onboardingPanel" class="card onboarding hidden">
+          <h2>Welcome to TurboScribe</h2>
+          <p>One-time setup for new users. After this, you can ignore settings.</p>
 
-        <div id="modelDownloadWrap" class="progress-wrap hidden">
-          <div class="progress-header">
-            <strong>Model download</strong>
-            <span id="modelDownloadMeta">Preparing…</span>
+          <ul class="onboarding-steps">
+            <li id="onboardingDepsStep">Install Whisper + FFmpeg dependencies</li>
+            <li id="onboardingModelStep">Download the Turbo model</li>
+            <li id="onboardingReadyStep">Run your first transcription</li>
+          </ul>
+
+          <div class="inline-actions full">
+            <button id="onboardingOpenSettingsBtn" class="primary">Open setup settings</button>
+            <button id="onboardingDoneBtn">Finish onboarding</button>
           </div>
-          <progress id="modelDownloadBar" value="0" max="100"></progress>
-        </div>
-      </section>
+        </section>
 
-      <section class="card" id="settingsCard">
-        <h2>Settings</h2>
-
-        <div class="kv">
-          <span>App version</span>
-          <span id="appVersion">—</span>
-        </div>
-        <div class="kv">
-          <span>Release source</span>
-          <span id="updateSource">—</span>
-        </div>
-
-        <div class="inline-actions">
-          <button id="checkUpdateBtn">Check for updates</button>
-          <button id="downloadUpdateBtn" class="primary" disabled>Download &amp; open update</button>
-        </div>
-
-        <div id="updateWrap" class="progress-wrap hidden">
-          <div class="progress-header">
-            <strong>Updater</strong>
-            <span id="updateMeta">Not checked yet</span>
+        <section class="card transcribe-card">
+          <div class="toolbar-grid choose-row">
+            <button id="pickFileBtn">Choose audio/video file</button>
+            <div id="selectedFile" class="file-pill">No file selected</div>
           </div>
-          <progress id="updateBar" value="0" max="100"></progress>
-        </div>
 
-        <div class="kv">
-          <span>Dependencies</span>
-          <span id="depsStatusText">Idle</span>
-        </div>
-
-        <div class="inline-actions">
-          <button id="installDepsBtn">Install/repair dependencies</button>
-          <button id="cancelDepsBtn" class="danger" disabled>Cancel</button>
-          <button id="installBrewBtn">Install Homebrew (guided)</button>
-        </div>
-
-        <pre id="depsLog" class="logbox" aria-live="polite"></pre>
-      </section>
-
-      <section class="card">
-        <h2>Transcribe</h2>
-        <div class="inline-actions">
-          <button id="pickFileBtn">Choose audio/video file</button>
-          <span id="selectedFile" class="muted">No file selected</span>
-        </div>
-
-        <div class="inline-actions">
-          <button id="startBtn" class="primary" disabled>Start transcription</button>
-          <button id="cancelBtn" class="danger" disabled>Cancel</button>
-        </div>
-
-        <div id="transcribeProgressWrap" class="progress-wrap hidden">
-          <div class="progress-header">
-            <strong>Transcription progress</strong>
-            <span id="transcribeMeta">Waiting…</span>
+          <div class="toolbar-grid action-row">
+            <button id="startBtn" class="primary" disabled>Start transcription</button>
+            <button id="cancelBtn" class="danger" disabled>Cancel</button>
+            <button id="showOutputBtn" disabled>Show transcript in Finder</button>
           </div>
-          <progress id="transcribeBar" value="0" max="100"></progress>
-          <div class="kv small-gap">
-            <span>Status</span>
-            <span id="transcribeStatusText">Idle</span>
+
+          <div id="transcribeProgressWrap" class="progress-wrap">
+            <div class="progress-header">
+              <strong>Transcription progress</strong>
+              <span id="transcribeMeta">Idle</span>
+            </div>
+            <progress id="transcribeBar" value="0" max="100"></progress>
+            <div class="kv small-gap">
+              <span>Status</span>
+              <span id="transcribeStatusText">Waiting for input</span>
+            </div>
           </div>
+
+          <pre id="transcribeLog" class="logbox slim">Whisper launch and runtime logs will appear here.</pre>
+
+          <textarea
+            id="transcriptArea"
+            readonly
+            placeholder="Transcript will appear here while the file is processed."
+          ></textarea>
+        </section>
+      </main>
+
+      <aside id="settingsDrawer" class="settings-drawer" aria-hidden="true">
+        <div class="drawer-header">
+          <h2>Settings & Setup</h2>
+          <button id="settingsCloseBtn" class="ghost">Close</button>
         </div>
 
-        <div class="inline-actions">
-          <button id="showOutputBtn" disabled>Show transcript in Finder</button>
-        </div>
-      </section>
+        <div class="drawer-scroll">
+          <section class="drawer-section">
+            <h3>Environment status</h3>
+            <div class="kv"><span>App version</span><span id="appVersion">—</span></div>
+            <div class="kv"><span>Release source</span><span id="updateSource">—</span></div>
+            <div class="kv"><span>Whisper CLI</span><span id="whisperStatus">Checking…</span></div>
+            <div class="kv"><span>ffprobe (FFmpeg)</span><span id="ffprobeStatus">Checking…</span></div>
+            <div class="kv"><span>Turbo model</span><span id="modelStatus">Checking…</span></div>
+          </section>
 
-      <section class="card transcript-card">
-        <h2>Live transcript</h2>
-        <textarea
-          id="transcriptArea"
-          readonly
-          placeholder="Transcript will appear here while the file is processed."
-        ></textarea>
-      </section>
-    </main>
+          <section class="drawer-section">
+            <h3>Model setup</h3>
+            <div class="inline-actions full">
+              <button id="downloadModelBtn" class="primary">Download large-v3-turbo model</button>
+            </div>
+
+            <div id="modelDownloadWrap" class="progress-wrap hidden">
+              <div class="progress-header">
+                <strong>Model download</strong>
+                <span id="modelDownloadMeta">Preparing…</span>
+              </div>
+              <progress id="modelDownloadBar" value="0" max="100"></progress>
+            </div>
+          </section>
+
+          <section class="drawer-section">
+            <h3>Application updates</h3>
+            <div class="inline-actions full">
+              <button id="checkUpdateBtn">Check for updates</button>
+              <button id="downloadUpdateBtn" class="primary" disabled>Download &amp; open update</button>
+            </div>
+
+            <div id="updateWrap" class="progress-wrap hidden">
+              <div class="progress-header">
+                <strong>Updater</strong>
+                <span id="updateMeta">Not checked yet</span>
+              </div>
+              <progress id="updateBar" value="0" max="100"></progress>
+            </div>
+          </section>
+
+          <section class="drawer-section">
+            <h3>Dependencies</h3>
+            <div class="kv"><span>Status</span><span id="depsStatusText">Idle</span></div>
+            <div class="inline-actions full">
+              <button id="installDepsBtn">Install/repair dependencies</button>
+              <button id="cancelDepsBtn" class="danger" disabled>Cancel</button>
+              <button id="installBrewBtn">Install Homebrew (guided)</button>
+            </div>
+            <pre id="depsLog" class="logbox">Dependency installer logs will appear here.</pre>
+          </section>
+        </div>
+      </aside>
+
+      <div id="drawerBackdrop" class="drawer-backdrop hidden"></div>
+    </div>
 
     <script src="app.js"></script>
   </body>
