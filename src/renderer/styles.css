@@ -1,0 +1,145 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b0d12;
+  --card: #141924;
+  --card-border: #2a3247;
+  --text: #eff3ff;
+  --muted: #9aa6c7;
+  --primary: #4f8cff;
+  --danger: #d84545;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif;
+  background: radial-gradient(circle at top, #121b31 0%, var(--bg) 45%);
+  color: var(--text);
+}
+
+.app {
+  width: min(960px, 92vw);
+  margin: 30px auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 32px;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: 30px;
+}
+
+.subtitle {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.card {
+  background: color-mix(in srgb, var(--card) 92%, black);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card h2 {
+  margin: 0;
+  font-size: 19px;
+}
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.kv span:last-child {
+  text-align: right;
+  color: var(--text);
+}
+
+.small-gap {
+  margin-top: 4px;
+}
+
+.inline-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+button {
+  border: none;
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: #2b3348;
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.primary {
+  background: var(--primary);
+}
+
+button.danger {
+  background: var(--danger);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.progress-wrap {
+  border: 1px solid #2f3952;
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+}
+
+progress {
+  width: 100%;
+  height: 16px;
+}
+
+.transcript-card textarea {
+  width: 100%;
+  min-height: 260px;
+  resize: vertical;
+  border-radius: 10px;
+  border: 1px solid #2f3952;
+  background: #0e121d;
+  color: var(--text);
+  padding: 12px;
+  font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.hidden {
+  display: none;
+}

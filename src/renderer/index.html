@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>TurboScribe</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="hero">
+        <h1>TurboScribe</h1>
+        <p class="subtitle">Local transcription with Whisper large-v3-turbo</p>
+      </header>
+
+      <section class="card" id="systemCard">
+        <h2>Setup</h2>
+        <div class="kv">
+          <span>Whisper CLI</span>
+          <span id="whisperStatus">Checking…</span>
+        </div>
+        <div class="kv">
+          <span>ffprobe (FFmpeg)</span>
+          <span id="ffprobeStatus">Checking…</span>
+        </div>
+        <div class="kv">
+          <span>Turbo model</span>
+          <span id="modelStatus">Checking…</span>
+        </div>
+        <div class="inline-actions">
+          <button id="downloadModelBtn" class="primary">Download large-v3-turbo model</button>
+        </div>
+
+        <div id="modelDownloadWrap" class="progress-wrap hidden">
+          <div class="progress-header">
+            <strong>Model download</strong>
+            <span id="modelDownloadMeta">Preparing…</span>
+          </div>
+          <progress id="modelDownloadBar" value="0" max="100"></progress>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Transcribe</h2>
+        <div class="inline-actions">
+          <button id="pickFileBtn">Choose audio/video file</button>
+          <span id="selectedFile" class="muted">No file selected</span>
+        </div>
+
+        <div class="inline-actions">
+          <button id="startBtn" class="primary" disabled>Start transcription</button>
+          <button id="cancelBtn" class="danger" disabled>Cancel</button>
+        </div>
+
+        <div id="transcribeProgressWrap" class="progress-wrap hidden">
+          <div class="progress-header">
+            <strong>Transcription progress</strong>
+            <span id="transcribeMeta">Waiting…</span>
+          </div>
+          <progress id="transcribeBar" value="0" max="100"></progress>
+          <div class="kv small-gap">
+            <span>Status</span>
+            <span id="transcribeStatusText">Idle</span>
+          </div>
+        </div>
+
+        <div class="inline-actions">
+          <button id="showOutputBtn" disabled>Show transcript in Finder</button>
+        </div>
+      </section>
+
+      <section class="card transcript-card">
+        <h2>Live transcript</h2>
+        <textarea id="transcriptArea" readonly placeholder="Transcript will appear here while the file is processed."></textarea>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

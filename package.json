@@ -1,0 +1,47 @@
+{
+  "name": "turboscribe",
+  "version": "0.1.0",
+  "description": "Local Whisper large-v3-turbo transcription GUI for macOS",
+  "main": "src/main.js",
+  "type": "commonjs",
+  "author": "Scott + Crab",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron .",
+    "start": "electron .",
+    "dist": "electron-builder --mac dmg",
+    "dist:dir": "electron-builder --mac dir"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.turboscribe.app",
+    "productName": "TurboScribe",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "README.md"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "dmg": {
+      "sign": false
+    }
+  }
+}
