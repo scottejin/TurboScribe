@@ -15,9 +15,16 @@ const MODEL_URL =
 const MODEL_SHA256 = 'aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a';
 const MODEL_FILE = 'large-v3-turbo.pt';
 
+const UPDATE_OWNER = process.env.TURBOSCRIBE_UPDATE_OWNER || 'scottejin';
+const UPDATE_REPO = process.env.TURBOSCRIBE_UPDATE_REPO || 'TurboScribe';
+const UPDATE_REPO_URL = `https://github.com/${UPDATE_OWNER}/${UPDATE_REPO}`;
+const UPDATE_API_URL = `https://api.github.com/repos/${UPDATE_OWNER}/${UPDATE_REPO}/releases/latest`;
+
 let mainWindow;
-let currentDownload = null;
+let currentModelDownload = null;
 let currentTranscription = null;
+let currentDependencyInstall = null;
+let currentUpdateDownload = null;
 
 function getModelPath() {
   return path.join(os.homedir(), '.cache', 'whisper', MODEL_FILE);
@@ -67,21 +74,28 @@ async function getModelStatus() {
 }
 
 async function getSystemStatus() {
-  const [whisperPath, ffprobePath, model] = await Promise.all([
+  const [whisperPath, ffprobePath, brewPath, model] = await Promise.all([
     findBinary('whisper'),
     findBinary('ffprobe'),
+    findBinary('brew'),
     getModelStatus(),
   ]);
 
   return {
+    appVersion: app.getVersion(),
+    updateSource: `${UPDATE_OWNER}/${UPDATE_REPO}`,
     whisperInstalled: Boolean(whisperPath),
     ffprobeInstalled: Boolean(ffprobePath),
+    brewInstalled: Boolean(brewPath),
     whisperPath,
     ffprobePath,
+    brewPath,
     model,
     busy: {
-      download: Boolean(currentDownload),
+      modelDownload: Boolean(currentModelDownload),
       transcribing: Boolean(currentTranscription),
+      dependenciesInstall: Boolean(currentDependencyInstall),
+      updateDownload: Boolean(currentUpdateDownload),
     },
   };
 }
@@ -93,7 +107,7 @@ function parseTimestamp(min, sec, ms) {
 function formatTranscriptionProgress({ processedSeconds, durationSeconds, startedAtMs }) {
   const progress = durationSeconds > 0 ? Math.min(processedSeconds / durationSeconds, 1) : 0;
   const elapsedSeconds = (Date.now() - startedAtMs) / 1000;
-  const etaSeconds = progress > 0 ? Math.max((elapsedSeconds / progress) - elapsedSeconds, 0) : null;
+  const etaSeconds = progress > 0 ? Math.max(elapsedSeconds / progress - elapsedSeconds, 0) : null;
 
   return { progress, elapsedSeconds, etaSeconds };
 }
@@ -206,18 +220,22 @@ function downloadFileWithProgress(url, outputPath, expectedSha256, onProgress) {
             fileStream.on('finish', async () => {
               fileStream.close(async () => {
                 try {
-                  const hash = crypto.createHash('sha256');
-                  const readStream = fs.createReadStream(tempPath);
+                  if (expectedSha256) {
+                    const hash = crypto.createHash('sha256');
+                    const readStream = fs.createReadStream(tempPath);
 
-                  await new Promise((hashResolve, hashReject) => {
-                    readStream.on('data', (chunk) => hash.update(chunk));
-                    readStream.on('error', hashReject);
-                    readStream.on('end', hashResolve);
-                  });
+                    await new Promise((hashResolve, hashReject) => {
+                      readStream.on('data', (chunk) => hash.update(chunk));
+                      readStream.on('error', hashReject);
+                      readStream.on('end', hashResolve);
+                    });
 
-                  const digest = hash.digest('hex');
-                  if (digest !== expectedSha256) {
-                    throw new Error(`Checksum mismatch. Expected ${expectedSha256}, got ${digest}.`);
+                    const digest = hash.digest('hex');
+                    if (digest !== expectedSha256) {
+                      throw new Error(
+                        `Checksum mismatch. Expected ${expectedSha256}, got ${digest}.`,
+                      );
+                    }
                   }
 
                   await fsp.rename(tempPath, outputPath);
@@ -244,6 +262,130 @@ function downloadFileWithProgress(url, outputPath, expectedSha256, onProgress) {
   });
 }
 
+function normalizeVersion(version) {
+  return String(version || '')
+    .trim()
+    .replace(/^v/i, '')
+    .split('-')[0];
+}
+
+function compareVersions(a, b) {
+  const aParts = normalizeVersion(a)
+    .split('.')
+    .map((x) => Number.parseInt(x, 10) || 0);
+  const bParts = normalizeVersion(b)
+    .split('.')
+    .map((x) => Number.parseInt(x, 10) || 0);
+  const maxLen = Math.max(aParts.length, bParts.length, 3);
+
+  for (let i = 0; i < maxLen; i += 1) {
+    const left = aParts[i] || 0;
+    const right = bParts[i] || 0;
+    if (left > right) return 1;
+    if (left < right) return -1;
+  }
+
+  return 0;
+}
+
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(
+      url,
+      {
+        headers: {
+          'User-Agent': `TurboScribe/${app.getVersion()}`,
+          Accept: 'application/vnd.github+json',
+        },
+      },
+      (response) => {
+        let data = '';
+
+        response.on('data', (chunk) => {
+          data += chunk.toString('utf8');
+        });
+
+        response.on('end', () => {
+          if (response.statusCode !== 200) {
+            reject(new Error(`Request failed (${response.statusCode}): ${data.slice(0, 280)}`));
+            return;
+          }
+
+          try {
+            resolve(JSON.parse(data));
+          } catch (error) {
+            reject(new Error(`Could not parse JSON response: ${error.message}`));
+          }
+        });
+      },
+    );
+
+    request.on('error', reject);
+  });
+}
+
+function selectBestReleaseAsset(assets) {
+  if (!Array.isArray(assets) || assets.length === 0) return null;
+
+  if (process.platform === 'darwin') {
+    const dmgAssets = assets.filter((asset) => asset?.name?.toLowerCase().endsWith('.dmg'));
+    if (!dmgAssets.length) return null;
+
+    const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+
+    return (
+      dmgAssets.find((asset) => asset.name.toLowerCase().includes(`-${arch}.dmg`)) ||
+      dmgAssets.find((asset) => asset.name.toLowerCase().includes('universal')) ||
+      dmgAssets[0]
+    );
+  }
+
+  return assets[0];
+}
+
+async function getLatestReleaseInfo() {
+  const release = await fetchJson(UPDATE_API_URL);
+  const currentVersion = normalizeVersion(app.getVersion());
+  const latestVersion = normalizeVersion(release.tag_name || release.name || currentVersion);
+  const updateAvailable = compareVersions(currentVersion, latestVersion) < 0;
+  const asset = selectBestReleaseAsset(release.assets);
+
+  return {
+    repository: `${UPDATE_OWNER}/${UPDATE_REPO}`,
+    repositoryUrl: UPDATE_REPO_URL,
+    currentVersion,
+    latestVersion,
+    releaseTag: release.tag_name || `v${latestVersion}`,
+    releaseName: release.name || release.tag_name || `v${latestVersion}`,
+    releaseUrl: release.html_url || UPDATE_REPO_URL,
+    publishedAt: release.published_at || null,
+    notes: release.body || '',
+    updateAvailable,
+    asset: asset
+      ? {
+          name: asset.name,
+          size: asset.size,
+          downloadUrl: asset.browser_download_url,
+        }
+      : null,
+  };
+}
+
+async function openHomebrewInstallerInTerminal() {
+  const scriptPath = path.join(app.getPath('temp'), 'TurboScribe-install-homebrew.command');
+  const script = `#!/bin/bash
+set -e
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+echo
+echo "Homebrew installation finished. Press Enter to close this window."
+read -r
+`;
+
+  await fsp.writeFile(scriptPath, script, { encoding: 'utf8', mode: 0o700 });
+  await execFileAsync('open', ['-a', 'Terminal', scriptPath]);
+  return scriptPath;
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 980,
@@ -267,11 +409,11 @@ ipcMain.handle('system:status', async () => {
 });
 
 ipcMain.handle('model:download', async () => {
-  if (currentDownload) {
+  if (currentModelDownload) {
     throw new Error('A model download is already in progress.');
   }
 
-  currentDownload = { startedAt: Date.now() };
+  currentModelDownload = { startedAt: Date.now() };
   send('model:download-state', { state: 'starting' });
 
   try {
@@ -288,8 +430,225 @@ ipcMain.handle('model:download', async () => {
     send('model:download-state', { state: 'error', message: error.message });
     throw error;
   } finally {
-    currentDownload = null;
+    currentModelDownload = null;
   }
+});
+
+ipcMain.handle('updater:check', async () => {
+  send('updater:state', { state: 'checking' });
+
+  try {
+    const info = await getLatestReleaseInfo();
+    send('updater:state', { state: 'checked', ...info });
+    return info;
+  } catch (error) {
+    send('updater:state', { state: 'error', message: error.message });
+    throw error;
+  }
+});
+
+ipcMain.handle('updater:download-and-open', async (_event, payload) => {
+  if (currentUpdateDownload) {
+    throw new Error('An update download is already in progress.');
+  }
+
+  const info = payload?.info || (await getLatestReleaseInfo());
+
+  if (!info.updateAvailable) {
+    return {
+      downloaded: false,
+      updateAvailable: false,
+      message: 'Already up to date.',
+      info,
+    };
+  }
+
+  if (!info.asset?.downloadUrl) {
+    throw new Error('No suitable installer asset found in the latest release.');
+  }
+
+  const updatesDir = path.join(app.getPath('downloads'), 'TurboScribe', 'updates');
+  const outputPath = path.join(updatesDir, info.asset.name);
+
+  currentUpdateDownload = {
+    startedAtMs: Date.now(),
+    outputPath,
+    info,
+  };
+
+  send('updater:state', {
+    state: 'downloading',
+    releaseTag: info.releaseTag,
+    assetName: info.asset.name,
+  });
+
+  try {
+    await downloadFileWithProgress(info.asset.downloadUrl, outputPath, null, (progress) => {
+      send('updater:download-progress', {
+        ...progress,
+        assetName: info.asset.name,
+        releaseTag: info.releaseTag,
+      });
+    });
+
+    send('updater:state', {
+      state: 'downloaded',
+      filePath: outputPath,
+      releaseTag: info.releaseTag,
+      assetName: info.asset.name,
+    });
+
+    const openErr = await shell.openPath(outputPath);
+    if (openErr) {
+      throw new Error(`Update downloaded but failed to open installer: ${openErr}`);
+    }
+
+    await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: 'Update Ready',
+      message: `TurboScribe ${info.latestVersion} downloaded`,
+      detail:
+        'The installer has been opened. Close TurboScribe, then replace your app in Applications to finish updating.',
+      buttons: ['OK'],
+    });
+
+    send('updater:state', {
+      state: 'installer-opened',
+      filePath: outputPath,
+      releaseTag: info.releaseTag,
+      assetName: info.asset.name,
+    });
+
+    return {
+      downloaded: true,
+      filePath: outputPath,
+      info,
+    };
+  } catch (error) {
+    send('updater:state', { state: 'error', message: error.message });
+    throw error;
+  } finally {
+    currentUpdateDownload = null;
+  }
+});
+
+ipcMain.handle('deps:install-homebrew', async () => {
+  const brewPath = await findBinary('brew');
+  if (brewPath) {
+    send('deps:state', {
+      state: 'brew-present',
+      message: `Homebrew already installed at ${brewPath}`,
+    });
+    return {
+      opened: false,
+      brewPresent: true,
+      brewPath,
+    };
+  }
+
+  const scriptPath = await openHomebrewInstallerInTerminal();
+  send('deps:state', {
+    state: 'homebrew-installer-opened',
+    message: 'Terminal opened with Homebrew installer.',
+    scriptPath,
+  });
+
+  return {
+    opened: true,
+    brewPresent: false,
+    scriptPath,
+  };
+});
+
+ipcMain.handle('deps:install', async () => {
+  if (currentDependencyInstall) {
+    throw new Error('Dependency installation is already running.');
+  }
+
+  const brewPath = await findBinary('brew');
+  if (!brewPath) {
+    send('deps:state', {
+      state: 'no-brew',
+      message: 'Homebrew not found. Use “Install Homebrew (guided)” in Settings first.',
+    });
+    throw new Error('Homebrew is required. Install Homebrew first.');
+  }
+
+  const args = ['install', 'openai-whisper', 'ffmpeg'];
+  const child = spawn(brewPath, args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      HOMEBREW_NO_AUTO_UPDATE: '1',
+    },
+  });
+
+  currentDependencyInstall = {
+    process: child,
+    startedAtMs: Date.now(),
+  };
+
+  send('deps:state', {
+    state: 'running',
+    message: 'Installing dependencies with Homebrew…',
+    command: `${brewPath} ${args.join(' ')}`,
+  });
+
+  attachLineParser(child.stdout, (line) => {
+    send('deps:log', { stream: 'stdout', line });
+  });
+
+  attachLineParser(child.stderr, (line) => {
+    send('deps:log', { stream: 'stderr', line });
+  });
+
+  child.on('error', (error) => {
+    send('deps:state', {
+      state: 'error',
+      message: error.message,
+    });
+    currentDependencyInstall = null;
+  });
+
+  child.on('close', async (code) => {
+    const elapsedSeconds = (Date.now() - currentDependencyInstall.startedAtMs) / 1000;
+
+    if (code === 0) {
+      const status = await getSystemStatus();
+      send('deps:state', {
+        state: 'done',
+        message: 'Dependencies installed successfully.',
+        elapsedSeconds,
+        status,
+      });
+    } else {
+      send('deps:state', {
+        state: 'error',
+        message: `Dependency installation failed (exit code ${code}).`,
+        elapsedSeconds,
+      });
+    }
+
+    currentDependencyInstall = null;
+  });
+
+  return {
+    started: true,
+  };
+});
+
+ipcMain.handle('deps:cancel', async () => {
+  if (!currentDependencyInstall?.process) {
+    return { cancelled: false };
+  }
+
+  currentDependencyInstall.process.kill('SIGTERM');
+  send('deps:state', {
+    state: 'cancelled',
+    message: 'Dependency install cancelled.',
+  });
+  currentDependencyInstall = null;
+  return { cancelled: true };
 });
 
 ipcMain.handle('dialog:pick-audio', async () => {

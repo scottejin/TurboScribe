@@ -1,11 +1,25 @@
 const whisperStatusEl = document.getElementById('whisperStatus');
 const ffprobeStatusEl = document.getElementById('ffprobeStatus');
 const modelStatusEl = document.getElementById('modelStatus');
+const appVersionEl = document.getElementById('appVersion');
+const updateSourceEl = document.getElementById('updateSource');
 
 const downloadModelBtn = document.getElementById('downloadModelBtn');
 const modelDownloadWrap = document.getElementById('modelDownloadWrap');
 const modelDownloadBar = document.getElementById('modelDownloadBar');
 const modelDownloadMeta = document.getElementById('modelDownloadMeta');
+
+const checkUpdateBtn = document.getElementById('checkUpdateBtn');
+const downloadUpdateBtn = document.getElementById('downloadUpdateBtn');
+const updateWrap = document.getElementById('updateWrap');
+const updateBar = document.getElementById('updateBar');
+const updateMeta = document.getElementById('updateMeta');
+
+const installDepsBtn = document.getElementById('installDepsBtn');
+const cancelDepsBtn = document.getElementById('cancelDepsBtn');
+const installBrewBtn = document.getElementById('installBrewBtn');
+const depsStatusText = document.getElementById('depsStatusText');
+const depsLogEl = document.getElementById('depsLog');
 
 const pickFileBtn = document.getElementById('pickFileBtn');
 const selectedFileEl = document.getElementById('selectedFile');
@@ -21,13 +35,19 @@ const transcriptArea = document.getElementById('transcriptArea');
 const showOutputBtn = document.getElementById('showOutputBtn');
 
 let appState = {
+  appVersion: '—',
+  updateSource: '—',
   whisperInstalled: false,
   ffprobeInstalled: false,
+  brewInstalled: false,
   modelInstalled: false,
   modelSizeBytes: 0,
   selectedFile: null,
   transcribing: false,
   outputPath: null,
+  updateInfo: null,
+  updateDownloading: false,
+  dependenciesInstalling: false,
 };
 
 function formatBytes(bytes) {
@@ -60,39 +80,54 @@ function updateControls() {
     Boolean(appState.selectedFile) &&
     !appState.transcribing;
 
+  const hasUpdate = Boolean(appState.updateInfo?.updateAvailable);
+
   startBtn.disabled = !canStart;
   cancelBtn.disabled = !appState.transcribing;
   pickFileBtn.disabled = appState.transcribing;
-  downloadModelBtn.disabled = appState.transcribing;
   showOutputBtn.disabled = !appState.outputPath;
+
+  downloadModelBtn.disabled = appState.transcribing || appState.dependenciesInstalling;
+
+  checkUpdateBtn.disabled = appState.updateDownloading || appState.dependenciesInstalling;
+  downloadUpdateBtn.disabled =
+    !hasUpdate || appState.updateDownloading || appState.dependenciesInstalling;
+
+  installDepsBtn.disabled = appState.dependenciesInstalling || appState.transcribing;
+  cancelDepsBtn.disabled = !appState.dependenciesInstalling;
+  installBrewBtn.disabled = appState.dependenciesInstalling;
 }
 
 function renderSetupStatus() {
+  appVersionEl.textContent = appState.appVersion || '—';
+  updateSourceEl.textContent = appState.updateSource || '—';
+
   whisperStatusEl.textContent = appState.whisperInstalled
     ? '✅ Installed'
-    : '❌ Missing (brew install openai-whisper)';
+    : '❌ Missing (openai-whisper)';
 
   ffprobeStatusEl.textContent = appState.ffprobeInstalled
     ? '✅ Installed'
-    : '❌ Missing (brew install ffmpeg)';
+    : '❌ Missing (ffmpeg)';
 
   modelStatusEl.textContent = appState.modelInstalled
     ? `✅ Installed (${formatBytes(appState.modelSizeBytes)})`
     : 'Not downloaded yet';
 
-  if (appState.modelInstalled) {
-    downloadModelBtn.textContent = 'Re-download model';
-  } else {
-    downloadModelBtn.textContent = 'Download large-v3-turbo model';
-  }
+  downloadModelBtn.textContent = appState.modelInstalled
+    ? 'Re-download large-v3-turbo model'
+    : 'Download large-v3-turbo model';
 }
 
 async function refreshSystemStatus() {
   try {
     const status = await window.api.getSystemStatus();
 
+    appState.appVersion = status.appVersion || appState.appVersion;
+    appState.updateSource = status.updateSource || appState.updateSource;
     appState.whisperInstalled = Boolean(status.whisperInstalled);
     appState.ffprobeInstalled = Boolean(status.ffprobeInstalled);
+    appState.brewInstalled = Boolean(status.brewInstalled);
     appState.modelInstalled = Boolean(status.model?.installed);
     appState.modelSizeBytes = Number(status.model?.sizeBytes || 0);
 
@@ -114,6 +149,15 @@ function setTranscribing(flag) {
   updateControls();
 }
 
+function appendDepsLog(line, stream = 'stdout') {
+  const prefix = stream === 'stderr' ? '[err]' : '[out]';
+  const next = `${depsLogEl.textContent}${depsLogEl.textContent ? '\n' : ''}${prefix} ${line}`;
+
+  // Keep log bounded
+  depsLogEl.textContent = next.slice(-16000);
+  depsLogEl.scrollTop = depsLogEl.scrollHeight;
+}
+
 async function onPickFile() {
   const filePath = await window.api.pickAudioFile();
   if (!filePath) return;
@@ -132,6 +176,72 @@ async function onDownloadModel() {
     await window.api.downloadModel();
   } catch (error) {
     modelDownloadMeta.textContent = `Download failed: ${error.message}`;
+  }
+}
+
+async function onCheckUpdates() {
+  updateWrap.classList.remove('hidden');
+  updateBar.value = 0;
+  updateMeta.textContent = 'Checking latest release…';
+
+  try {
+    const info = await window.api.checkForUpdates();
+    appState.updateInfo = info;
+    updateControls();
+  } catch (error) {
+    updateMeta.textContent = `Update check failed: ${error.message}`;
+  }
+}
+
+async function onDownloadAndOpenUpdate() {
+  if (!appState.updateInfo?.updateAvailable) return;
+
+  updateWrap.classList.remove('hidden');
+  updateBar.value = 0;
+  updateMeta.textContent = 'Downloading update installer…';
+
+  appState.updateDownloading = true;
+  updateControls();
+
+  try {
+    await window.api.downloadAndOpenUpdate(appState.updateInfo);
+  } catch (error) {
+    appState.updateDownloading = false;
+    updateControls();
+    updateMeta.textContent = `Update failed: ${error.message}`;
+  }
+}
+
+async function onInstallDependencies() {
+  depsLogEl.textContent = '';
+  depsStatusText.textContent = 'Starting dependency install…';
+
+  appState.dependenciesInstalling = true;
+  updateControls();
+
+  try {
+    await window.api.installDependencies();
+  } catch (error) {
+    appState.dependenciesInstalling = false;
+    updateControls();
+    depsStatusText.textContent = `Could not start: ${error.message}`;
+  }
+}
+
+async function onCancelDependencies() {
+  await window.api.cancelDependenciesInstall();
+}
+
+async function onInstallHomebrewGuided() {
+  try {
+    const result = await window.api.installHomebrewGuided();
+    if (result?.brewPresent) {
+      depsStatusText.textContent = 'Homebrew already installed.';
+    } else if (result?.opened) {
+      depsStatusText.textContent = 'Terminal opened: complete Homebrew install there, then retry dependencies.';
+    }
+  } catch (error) {
+    depsStatusText.textContent = `Failed to open Homebrew installer: ${error.message}`;
   }
 }
 
@@ -199,6 +309,109 @@ window.api.onModelDownloadProgress((evt) => {
   modelDownloadMeta.textContent = `${percent.toFixed(1)}% • ${downloaded}/${total} • ${speed} • ETA ${eta}`;
 });
 
+window.api.onUpdaterState((evt) => {
+  updateWrap.classList.remove('hidden');
+
+  if (evt.state === 'checking') {
+    updateMeta.textContent = 'Checking latest release…';
+  }
+
+  if (evt.state === 'checked') {
+    appState.updateInfo = evt;
+    appState.updateDownloading = false;
+
+    if (evt.updateAvailable) {
+      updateBar.value = 0;
+      updateMeta.textContent = `Update found: ${evt.currentVersion} → ${evt.latestVersion}`;
+    } else {
+      updateBar.value = 100;
+      updateMeta.textContent = `Up to date (v${evt.currentVersion})`;
+    }
+  }
+
+  if (evt.state === 'downloading') {
+    appState.updateDownloading = true;
+    updateMeta.textContent = `Downloading ${evt.assetName || 'installer'}…`;
+  }
+
+  if (evt.state === 'downloaded') {
+    appState.updateDownloading = false;
+    updateBar.value = 100;
+    updateMeta.textContent = `Downloaded ${evt.assetName}`;
+  }
+
+  if (evt.state === 'installer-opened') {
+    appState.updateDownloading = false;
+    updateMeta.textContent = 'Installer opened. Replace app in Applications to finish update.';
+  }
+
+  if (evt.state === 'error') {
+    appState.updateDownloading = false;
+    updateMeta.textContent = `Updater error: ${evt.message}`;
+  }
+
+  updateControls();
+});
+
+window.api.onUpdaterDownloadProgress((evt) => {
+  updateWrap.classList.remove('hidden');
+
+  const percent = Number(evt.percent || 0);
+  updateBar.value = Math.max(0, Math.min(percent, 100));
+
+  const downloaded = formatBytes(evt.downloadedBytes || 0);
+  const total = evt.totalBytes ? formatBytes(evt.totalBytes) : 'unknown';
+  const speed = evt.speedBytesPerSec ? `${formatBytes(evt.speedBytesPerSec)}/s` : '—';
+  const eta = Number.isFinite(evt.etaSeconds) ? formatDuration(evt.etaSeconds) : '—';
+
+  updateMeta.textContent = `${percent.toFixed(1)}% • ${downloaded}/${total} • ${speed} • ETA ${eta}`;
+});
+
+window.api.onDependenciesState(async (evt) => {
+  if (evt.state === 'running') {
+    appState.dependenciesInstalling = true;
+    depsStatusText.textContent = evt.message || 'Installing dependencies…';
+  }
+
+  if (evt.state === 'done') {
+    appState.dependenciesInstalling = false;
+    const elapsed = Number.isFinite(evt.elapsedSeconds)
+      ? `Completed in ${formatDuration(evt.elapsedSeconds)}`
+      : 'Completed';
+    depsStatusText.textContent = elapsed;
+    await refreshSystemStatus();
+  }
+
+  if (evt.state === 'error') {
+    appState.dependenciesInstalling = false;
+    depsStatusText.textContent = `Error: ${evt.message}`;
+  }
+
+  if (evt.state === 'cancelled') {
+    appState.dependenciesInstalling = false;
+    depsStatusText.textContent = 'Cancelled';
+  }
+
+  if (evt.state === 'no-brew') {
+    appState.dependenciesInstalling = false;
+    depsStatusText.textContent = evt.message || 'Homebrew missing';
+  }
+
+  if (evt.state === 'homebrew-installer-opened') {
+    depsStatusText.textContent = evt.message || 'Homebrew installer opened';
+  }
+
+  if (evt.state === 'brew-present') {
+    depsStatusText.textContent = evt.message || 'Homebrew already installed';
+  }
+
+  updateControls();
+});
+
+window.api.onDependenciesLog((evt) => {
+  appendDepsLog(evt.line, evt.stream);
+});
+
 window.api.onTranscribeStatus((evt) => {
   transcribeStatusText.textContent = evt.message || 'Working…';
 });
@@ -245,7 +458,13 @@ showOutputBtn.addEventListener('click', async () => {
 
 pickFileBtn.addEventListener('click', onPickFile);
 downloadModelBtn.addEventListener('click', onDownloadModel);
+checkUpdateBtn.addEventListener('click', onCheckUpdates);
+downloadUpdateBtn.addEventListener('click', onDownloadAndOpenUpdate);
+installDepsBtn.addEventListener('click', onInstallDependencies);
+cancelDepsBtn.addEventListener('click', onCancelDependencies);
+installBrewBtn.addEventListener('click', onInstallHomebrewGuided);
 startBtn.addEventListener('click', onStartTranscription);
 cancelBtn.addEventListener('click', onCancelTranscription);
 
+depsLogEl.textContent = 'Dependency installer logs will appear here.';
 refreshSystemStatus();

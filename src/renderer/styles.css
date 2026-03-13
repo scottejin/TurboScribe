@@ -21,7 +21,7 @@ body {
 }
 
 .app {
-  width: min(960px, 92vw);
+  width: min(980px, 92vw);
   margin: 30px auto;
   display: flex;
   flex-direction: column;
@@ -126,6 +126,21 @@ button:disabled {
 progress {
   width: 100%;
   height: 16px;
+}
+
+.logbox {
+  margin: 0;
+  border: 1px solid #2f3952;
+  border-radius: 10px;
+  background: #0d111b;
+  color: #c6d4ff;
+  min-height: 110px;
+  max-height: 200px;
+  overflow: auto;
+  padding: 10px;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .transcript-card textarea {
