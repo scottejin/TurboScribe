@@ -450,6 +450,38 @@ function sanitizeExt(ext, fallback = '.webm') {
   return normalized.startsWith('.') ? normalized : `.${normalized}`;
 }
 
+function sanitizeFileStem(stem, fallback = 'transcript') {
+  const safe = String(stem || '')
+    .trim()
+    .replace(/\.[^./\\]+$/, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+
+  return safe || fallback;
+}
+
+function timestampForFilename() {
+  return new Date()
+    .toISOString()
+    .replace(/[:]/g, '-')
+    .replace(/\..+/, '');
+}
+
+async function writeTranscriptToDesktop({ transcriptText, stem = 'transcript' }) {
+  const desktopDir = app.getPath('desktop');
+  const exportDir = path.join(desktopDir, 'TurboScribe Exports');
+  await fsp.mkdir(exportDir, { recursive: true });
+
+  const safeStem = sanitizeFileStem(stem);
+  const fileName = `${safeStem}-${timestampForFilename()}.txt`;
+  const outPath = path.join(exportDir, fileName);
+
+  const normalized = String(transcriptText || '').trim();
+  await fsp.writeFile(outPath, `${normalized}\n`, 'utf8');
+  return outPath;
+}
+
 function parseWhisperSegmentsFromJson(obj) {
   if (!obj || typeof obj !== 'object') return [];
   const segments = Array.isArray(obj.segments) ? obj.segments : [];
@@ -1227,18 +1259,18 @@ ipcMain.handle('realtime:stop', async (_event, payload = {}) => {
     language: session.options.language,
   });
 
-  const timestamp = new Date()
-    .toISOString()
-    .replace(/[:]/g, '-')
-    .replace(/\..+/, '');
-  const docsOutDir = path.join(app.getPath('documents'), 'TurboScribe', 'Transcripts');
-  await fsp.mkdir(docsOutDir, { recursive: true });
+  const desktopTxtPath = await writeTranscriptToDesktop({
+    transcriptText: finalResult.text,
+    stem: `live-${session.options.task}`,
+  });
 
-  const outBase = `live-${timestamp}`;
-  const outputTxtPath = path.join(docsOutDir, `${outBase}.txt`);
-  const outputJsonPath = path.join(docsOutDir, `${outBase}.json`);
+  const desktopDir = app.getPath('desktop');
+  const exportDir = path.join(desktopDir, 'TurboScribe Exports');
+  await fsp.mkdir(exportDir, { recursive: true });
 
-  await fsp.writeFile(outputTxtPath, `${finalResult.text}\n`, 'utf8');
+  const outBase = `${sanitizeFileStem(path.parse(desktopTxtPath).name)}-meta`;
+  const outputJsonPath = path.join(exportDir, `${outBase}.json`);
+
   await fsp.writeFile(
     outputJsonPath,
     JSON.stringify(
@@ -1260,7 +1292,7 @@ ipcMain.handle('realtime:stop', async (_event, payload = {}) => {
 
   const response = {
     sessionId: session.id,
-    outputPath: outputTxtPath,
+    outputPath: desktopTxtPath,
     jsonPath: outputJsonPath,
     transcript: finalResult.text,
     segments: finalResult.segments,
@@ -1274,7 +1306,7 @@ ipcMain.handle('realtime:stop', async (_event, payload = {}) => {
   send('realtime:state', {
     state: 'finalized',
     sessionId: session.id,
-    outputPath: outputTxtPath,
+    outputPath: desktopTxtPath,
   });
 
   realtimeSession = null;
@@ -1571,10 +1603,17 @@ ipcMain.handle('transcribe:start', async (_event, payload) => {
       send('transcribe:status', { message: 'Finalizing transcript output…' });
 
       let transcript = transcriptLines.join('\n').trim();
-
-      if (!transcript && (await fileExists(outputPath))) {
-        transcript = (await fsp.readFile(outputPath, 'utf8')).trim();
+      if (await fileExists(outputPath)) {
+        const fromFile = (await fsp.readFile(outputPath, 'utf8')).trim();
+        if (fromFile) {
+          transcript = fromFile;
+        }
       }
+
+      const desktopOutputPath = await writeTranscriptToDesktop({
+        transcriptText: transcript,
+        stem: `${path.parse(audioPath).name}-transcript`,
+      });
 
       const elapsedSeconds = (Date.now() - startedAtMs) / 1000;
       if (durationSeconds > 0 && Number.isFinite(elapsedSeconds) && elapsedSeconds > 0) {
@@ -1594,7 +1633,8 @@ ipcMain.handle('transcribe:start', async (_event, payload) => {
       });
 
       send('transcribe:done', {
-        outputPath,
+        outputPath: desktopOutputPath,
+        sourceOutputPath: outputPath,
         outputDir,
         transcript,
         elapsedSeconds,
