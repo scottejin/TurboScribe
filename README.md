@@ -9,6 +9,7 @@ TurboScribe is a macOS desktop app for local speech-to-text transcription using 
 - One-time **onboarding setup** flow for first-time users
 - Top-bar **Dark/Light switch** with **system-theme auto mode**
 - Space-efficient full-window layout for transcript focus
+- Transcript panel optimized for readability (latest section visible in-app, full text preserved in desktop export)
 - Two input modes:
   - **File transcription** (audio/video file)
   - **Realtime recording**
@@ -86,7 +87,8 @@ DMG output will be in `dist/`.
 ## Output locations
 
 - Whisper model: `~/.cache/whisper/large-v3-turbo.pt`
-- Transcripts: `~/Documents/TurboScribe/Transcripts`
+- Full transcript TXT exports: `~/Desktop/TurboScribe Exports`
+- Live-session metadata JSON exports: `~/Desktop/TurboScribe Exports`
 - Downloaded update installers: `~/Downloads/TurboScribe/updates`
 
 ## Security and distribution notes

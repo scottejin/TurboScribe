@@ -98,6 +98,7 @@ let appState = {
 let themeMode = localStorage.getItem(storageKeys.themeMode) || 'system';
 let transcriptEntries = [];
 let fullTranscriptText = '';
+let transcriptRenderPending = false;
 let runtimeMetricsTimer = null;
 let clipboardPasteDebounceMs = 0;
 
@@ -281,6 +282,16 @@ function setInputMode(mode) {
   updateControls();
 }
 
+function requestTranscriptRender() {
+  if (transcriptRenderPending) return;
+  transcriptRenderPending = true;
+
+  requestAnimationFrame(() => {
+    transcriptRenderPending = false;
+    renderTranscriptBoard();
+  });
+}
+
 function renderTranscriptBoard() {
   transcriptBlocks.innerHTML = '';
 
@@ -349,7 +360,7 @@ function renderTranscriptBoard() {
 function resetTranscriptBoard() {
   transcriptEntries = [];
   fullTranscriptText = '';
-  renderTranscriptBoard();
+  requestTranscriptRender();
 }
 
 function addTranscriptEntry(entry) {
@@ -372,7 +383,7 @@ function addTranscriptEntry(entry) {
     fullTranscriptText = transcriptEntries.map((item) => item.text).join('\n');
   }
 
-  renderTranscriptBoard();
+  requestTranscriptRender();
 }
 
 function replaceTranscriptWithFinal(segments, fullText) {
@@ -390,7 +401,7 @@ function replaceTranscriptWithFinal(segments, fullText) {
       }))
       .filter((segment) => segment.text);
 
-    renderTranscriptBoard();
+    requestTranscriptRender();
     return;
   }
 
@@ -407,7 +418,7 @@ function replaceTranscriptWithFinal(segments, fullText) {
     provisional: false,
   }));
 
-  renderTranscriptBoard();
+  requestTranscriptRender();
 }
 
 function updateLiveElapsed() {
