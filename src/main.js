@@ -1675,6 +1675,36 @@ ipcMain.handle('shell:show-item', async (_event, payload) => {
   return shell.showItemInFolder(targetPath);
 });
 
+ipcMain.handle('app:quit', async () => {
+  if (currentTranscription?.fallbackTimer) {
+    clearInterval(currentTranscription.fallbackTimer);
+  }
+
+  if (currentTranscription?.process) {
+    try {
+      currentTranscription.process.kill('SIGTERM');
+    } catch {
+      // ignore
+    }
+  }
+
+  if (currentDependencyInstall?.process) {
+    try {
+      currentDependencyInstall.process.kill('SIGTERM');
+    } catch {
+      // ignore
+    }
+  }
+
+  if (realtimeSession) {
+    realtimeSession.cancelled = true;
+    realtimeSession.queue = [];
+  }
+
+  setTimeout(() => app.quit(), 10);
+  return { quitting: true };
+});
+
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {

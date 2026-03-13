@@ -5,6 +5,7 @@ const whisperStatusEl = document.getElementById('whisperStatus');
 const ffprobeStatusEl = document.getElementById('ffprobeStatus');
 const modelStatusEl = document.getElementById('modelStatus');
 
+const quitAppBtn = document.getElementById('quitAppBtn');
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsCloseBtn = document.getElementById('settingsCloseBtn');
 const settingsDrawer = document.getElementById('settingsDrawer');
@@ -1178,6 +1179,15 @@ window.api.onRealtimeFinal((evt) => {
 window.api.onRealtimeError((evt) => {
   appendTranscribeLog(`Realtime error: ${evt.message}`);
   setLiveStatus(`Realtime error: ${evt.message}`);
+});
+
+quitAppBtn.addEventListener('click', async () => {
+  quitAppBtn.disabled = true;
+  try {
+    await window.api.quitApp();
+  } catch {
+    quitAppBtn.disabled = false;
+  }
 });
 
 settingsBtn.addEventListener('click', openSettingsDrawer);

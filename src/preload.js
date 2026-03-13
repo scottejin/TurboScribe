@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('api', {
   startTranscription: (audioPath) => ipcRenderer.invoke('transcribe:start', { audioPath }),
   cancelTranscription: () => ipcRenderer.invoke('transcribe:cancel'),
   showInFinder: (targetPath) => ipcRenderer.invoke('shell:show-item', { path: targetPath }),
+  quitApp: () => ipcRenderer.invoke('app:quit'),
 
   onModelDownloadProgress: (listener) => exposeListener('model:download-progress', listener),
   onModelDownloadState: (listener) => exposeListener('model:download-state', listener),
