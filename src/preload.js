@@ -9,6 +9,14 @@ function exposeListener(channel, listener) {
 contextBridge.exposeInMainWorld('api', {
   getSystemStatus: () => ipcRenderer.invoke('system:status'),
   downloadModel: () => ipcRenderer.invoke('model:download'),
+
+  checkForUpdates: () => ipcRenderer.invoke('updater:check'),
+  downloadAndOpenUpdate: (info) => ipcRenderer.invoke('updater:download-and-open', { info }),
+
+  installHomebrewGuided: () => ipcRenderer.invoke('deps:install-homebrew'),
+  installDependencies: () => ipcRenderer.invoke('deps:install'),
+  cancelDependenciesInstall: () => ipcRenderer.invoke('deps:cancel'),
+
   pickAudioFile: () => ipcRenderer.invoke('dialog:pick-audio'),
   startTranscription: (audioPath) => ipcRenderer.invoke('transcribe:start', { audioPath }),
   cancelTranscription: () => ipcRenderer.invoke('transcribe:cancel'),
@@ -16,6 +24,12 @@ contextBridge.exposeInMainWorld('api', {
 
   onModelDownloadProgress: (listener) => exposeListener('model:download-progress', listener),
   onModelDownloadState: (listener) => exposeListener('model:download-state', listener),
+
+  onUpdaterState: (listener) => exposeListener('updater:state', listener),
+  onUpdaterDownloadProgress: (listener) => exposeListener('updater:download-progress', listener),
+
+  onDependenciesState: (listener) => exposeListener('deps:state', listener),
+  onDependenciesLog: (listener) => exposeListener('deps:log', listener),
 
   onTranscribeLog: (listener) => exposeListener('transcribe:log', listener),
   onTranscribeStatus: (listener) => exposeListener('transcribe:status', listener),

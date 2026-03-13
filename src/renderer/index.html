@@ -40,6 +40,45 @@
         </div>
       </section>
 
+      <section class="card" id="settingsCard">
+        <h2>Settings</h2>
+
+        <div class="kv">
+          <span>App version</span>
+          <span id="appVersion">—</span>
+        </div>
+        <div class="kv">
+          <span>Release source</span>
+          <span id="updateSource">—</span>
+        </div>
+
+        <div class="inline-actions">
+          <button id="checkUpdateBtn">Check for updates</button>
+          <button id="downloadUpdateBtn" class="primary" disabled>Download &amp; open update</button>
+        </div>
+
+        <div id="updateWrap" class="progress-wrap hidden">
+          <div class="progress-header">
+            <strong>Updater</strong>
+            <span id="updateMeta">Not checked yet</span>
+          </div>
+          <progress id="updateBar" value="0" max="100"></progress>
+        </div>
+
+        <div class="kv">
+          <span>Dependencies</span>
+          <span id="depsStatusText">Idle</span>
+        </div>
+
+        <div class="inline-actions">
+          <button id="installDepsBtn">Install/repair dependencies</button>
+          <button id="cancelDepsBtn" class="danger" disabled>Cancel</button>
+          <button id="installBrewBtn">Install Homebrew (guided)</button>
+        </div>
+
+        <pre id="depsLog" class="logbox" aria-live="polite"></pre>
+      </section>
+
       <section class="card">
         <h2>Transcribe</h2>
         <div class="inline-actions">
@@ -71,7 +110,11 @@
 
       <section class="card transcript-card">
         <h2>Live transcript</h2>
-        <textarea id="transcriptArea" readonly placeholder="Transcript will appear here while the file is processed."></textarea>
+        <textarea
+          id="transcriptArea"
+          readonly
+          placeholder="Transcript will appear here while the file is processed."
+        ></textarea>
       </section>
     </main>
 
