@@ -20,6 +20,17 @@ const UPDATE_REPO = process.env.TURBOSCRIBE_UPDATE_REPO || 'TurboScribe';
 const UPDATE_REPO_URL = `https://github.com/${UPDATE_OWNER}/${UPDATE_REPO}`;
 const UPDATE_API_URL = `https://api.github.com/repos/${UPDATE_OWNER}/${UPDATE_REPO}/releases/latest`;
 
+const COMMON_BIN_DIRS = [
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  '/opt/homebrew/sbin',
+  '/usr/local/sbin',
+  '/usr/bin',
+  '/bin',
+  '/usr/sbin',
+  '/sbin',
+];
+
 let mainWindow;
 let currentModelDownload = null;
 let currentTranscription = null;
@@ -36,14 +47,83 @@ function send(channel, payload) {
   }
 }
 
-async function findBinary(name) {
+function buildAugmentedPath(currentPath = process.env.PATH || '') {
+  const seen = new Set();
+  const merged = [];
+
+  for (const entry of [...COMMON_BIN_DIRS, ...String(currentPath).split(':')]) {
+    const normalized = String(entry || '').trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    merged.push(normalized);
+  }
+
+  return merged.join(':');
+}
+
+function buildExecutionEnv(overrides = {}) {
+  return {
+    ...process.env,
+    PATH: buildAugmentedPath(process.env.PATH),
+    ...overrides,
+  };
+}
+
+async function isExecutable(filePath) {
   try {
-    const { stdout } = await execFileAsync('/usr/bin/which', [name]);
-    const resolved = stdout.trim();
-    return resolved || null;
+    await fsp.access(filePath, fs.constants.X_OK);
+    return true;
   } catch {
+    return false;
+  }
+}
+
+async function findBinary(name) {
+  if (!/^[a-zA-Z0-9._-]+$/.test(String(name || ''))) {
     return null;
   }
+
+  for (const dir of COMMON_BIN_DIRS) {
+    const candidate = path.join(dir, name);
+    if (await isExecutable(candidate)) {
+      return candidate;
+    }
+  }
+
+  try {
+    const { stdout } = await execFileAsync('/usr/bin/which', [name], {
+      env: buildExecutionEnv(),
+    });
+    const resolved = stdout.trim();
+    if (resolved && (await isExecutable(resolved))) {
+      return resolved;
+    }
+  } catch {
+    // continue to shell fallback
+  }
+
+  for (const shellPath of ['/bin/zsh', '/bin/bash']) {
+    if (!(await isExecutable(shellPath))) continue;
+
+    try {
+      const { stdout } = await execFileAsync(shellPath, ['-lc', `command -v ${name} || true`], {
+        env: buildExecutionEnv(),
+      });
+      const lines = stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const resolved = lines[lines.length - 1];
+
+      if (resolved && path.isAbsolute(resolved) && (await isExecutable(resolved))) {
+        return resolved;
+      }
+    } catch {
+      // try next shell
+    }
+  }
+
+  return null;
 }
 
 async function fileExists(filePath) {
@@ -577,10 +657,9 @@ ipcMain.handle('deps:install', async () => {
   const args = ['install', 'openai-whisper', 'ffmpeg'];
   const child = spawn(brewPath, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
+    env: buildExecutionEnv({
       HOMEBREW_NO_AUTO_UPDATE: '1',
-    },
+    }),
   });
 
   currentDependencyInstall = {
@@ -726,6 +805,7 @@ ipcMain.handle('transcribe:start', async (_event, payload) => {
 
   const child = spawn(whisperPath, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: buildExecutionEnv(),
   });
 
   currentTranscription = {
