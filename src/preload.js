@@ -8,6 +8,8 @@ function exposeListener(channel, listener) {
 
 contextBridge.exposeInMainWorld('api', {
   getSystemStatus: () => ipcRenderer.invoke('system:status'),
+  sampleRuntimeMetrics: () => ipcRenderer.invoke('metrics:sample'),
+
   downloadModel: () => ipcRenderer.invoke('model:download'),
 
   checkForUpdates: () => ipcRenderer.invoke('updater:check'),
@@ -17,17 +19,12 @@ contextBridge.exposeInMainWorld('api', {
   installDependencies: () => ipcRenderer.invoke('deps:install'),
   cancelDependenciesInstall: () => ipcRenderer.invoke('deps:cancel'),
 
-  startRealtimeSession: (options) => ipcRenderer.invoke('realtime:start', options),
-  pushRealtimeChunk: (payload) => ipcRenderer.invoke('realtime:push-chunk', payload),
-  stopRealtimeSession: (payload) => ipcRenderer.invoke('realtime:stop', payload),
-  cancelRealtimeSession: (payload) => ipcRenderer.invoke('realtime:cancel', payload),
-
-  sampleRuntimeMetrics: () => ipcRenderer.invoke('metrics:sample'),
-
   pickAudioFile: () => ipcRenderer.invoke('dialog:pick-audio'),
   pickAudioFromClipboard: () => ipcRenderer.invoke('dialog:pick-audio-from-clipboard'),
+
   startTranscription: (audioPath) => ipcRenderer.invoke('transcribe:start', { audioPath }),
   cancelTranscription: () => ipcRenderer.invoke('transcribe:cancel'),
+
   showInFinder: (targetPath) => ipcRenderer.invoke('shell:show-item', { path: targetPath }),
   quitApp: () => ipcRenderer.invoke('app:quit'),
 
@@ -39,11 +36,6 @@ contextBridge.exposeInMainWorld('api', {
 
   onDependenciesState: (listener) => exposeListener('deps:state', listener),
   onDependenciesLog: (listener) => exposeListener('deps:log', listener),
-
-  onRealtimeState: (listener) => exposeListener('realtime:state', listener),
-  onRealtimeSegment: (listener) => exposeListener('realtime:segment', listener),
-  onRealtimeFinal: (listener) => exposeListener('realtime:final', listener),
-  onRealtimeError: (listener) => exposeListener('realtime:error', listener),
 
   onTranscribeLog: (listener) => exposeListener('transcribe:log', listener),
   onTranscribeStatus: (listener) => exposeListener('transcribe:status', listener),
