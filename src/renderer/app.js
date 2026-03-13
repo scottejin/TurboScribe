@@ -34,6 +34,7 @@ const startLiveBtn = document.getElementById('startLiveBtn');
 const stopLiveBtn = document.getElementById('stopLiveBtn');
 const liveElapsed = document.getElementById('liveElapsed');
 const liveStatusText = document.getElementById('liveStatusText');
+const liveStatusBadge = document.getElementById('liveStatusBadge');
 
 const downloadModelBtn = document.getElementById('downloadModelBtn');
 const modelDownloadWrap = document.getElementById('modelDownloadWrap');
@@ -111,6 +112,7 @@ const liveState = {
   stream: null,
   recorder: null,
   chunks: [],
+  pendingChunkUploads: new Set(),
   startedAtMs: 0,
   lastChunkAtMs: 0,
   elapsedTimer: null,
@@ -450,6 +452,26 @@ function appendTranscribeLog(line) {
   transcribeLogEl.scrollTop = transcribeLogEl.scrollHeight;
 }
 
+function areLivePrerequisitesReady() {
+  return appState.whisperInstalled && appState.ffprobeInstalled && appState.modelInstalled;
+}
+
+function refreshLiveStatusBadge() {
+  if (!liveStatusBadge) return;
+
+  if (areLivePrerequisitesReady()) {
+    liveStatusBadge.textContent = 'Accuracy profile: turbo live + large-v3 final pass';
+    return;
+  }
+
+  const missing = [];
+  if (!appState.whisperInstalled) missing.push('openai-whisper');
+  if (!appState.ffprobeInstalled) missing.push('ffmpeg');
+  if (!appState.modelInstalled) missing.push('turbo model');
+
+  liveStatusBadge.textContent = `Setup required before live recording: ${missing.join(', ')}`;
+}
+
 function renderSetupStatus() {
   appVersionEl.textContent = appState.appVersion || '—';
   updateSourceEl.textContent = appState.updateSource || '—';
@@ -469,6 +491,8 @@ function renderSetupStatus() {
   downloadModelBtn.textContent = appState.modelInstalled
     ? 'Re-download large-v3-turbo model'
     : 'Download large-v3-turbo model';
+
+  refreshLiveStatusBadge();
 }
 
 function renderOnboarding() {
@@ -517,12 +541,19 @@ function updateControls() {
   cancelBtn.disabled = !appState.fileTranscribing;
   showOutputBtn.disabled = !appState.outputPath;
 
+  const liveCaptureSupported =
+    typeof navigator !== 'undefined' &&
+    Boolean(navigator.mediaDevices) &&
+    typeof MediaRecorder !== 'undefined';
+
   startLiveBtn.disabled =
     appState.inputMode !== 'live' ||
     liveState.active ||
     liveState.stopping ||
     appState.fileTranscribing ||
-    appState.dependenciesInstalling;
+    appState.dependenciesInstalling ||
+    !areLivePrerequisitesReady() ||
+    !liveCaptureSupported;
 
   stopLiveBtn.disabled = !liveState.active || liveState.stopping;
 
@@ -553,6 +584,11 @@ async function refreshSystemStatus() {
 
     renderSetupStatus();
     renderOnboarding();
+
+    if (!areLivePrerequisitesReady() && !liveState.active) {
+      setLiveStatus('Complete setup (dependencies + model) before using live recording.');
+    }
+
     updateControls();
   } catch (error) {
     setFileStatus(`Status check failed: ${error.message}`);
@@ -762,6 +798,7 @@ function resetLiveState() {
   liveState.sessionId = null;
   liveState.recorder = null;
   liveState.chunks = [];
+  liveState.pendingChunkUploads = new Set();
   liveState.startedAtMs = 0;
   liveState.lastChunkAtMs = 0;
   liveState.sourceMode = getSelectedLiveSource();
@@ -779,6 +816,16 @@ function setLiveStatus(text) {
 async function onStartLiveRecording() {
   if (liveState.active || liveState.stopping || appState.fileTranscribing) return;
 
+  if (!areLivePrerequisitesReady()) {
+    setLiveStatus('Complete setup (dependencies + model) before starting live recording.');
+    return;
+  }
+
+  if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices) {
+    setLiveStatus('Live recording is not available in this runtime.');
+    return;
+  }
+
   appState.outputPath = null;
   resetTranscriptBoard();
   if (transcribeLogEl) {
@@ -793,7 +840,7 @@ async function onStartLiveRecording() {
 
   transcribeProgressWrap.classList.remove('hidden');
   setProgressIndeterminate(transcribeBar, true);
-  transcribeMeta.textContent = 'Live capture running (max-accuracy mode)';
+  transcribeMeta.textContent = 'Live capture running (preview + final max-accuracy pass)';
 
   setLiveStatus('Starting realtime session…');
 
@@ -803,7 +850,7 @@ async function onStartLiveRecording() {
     const session = await window.api.startRealtimeSession({
       sourceMode,
       task,
-      liveModel: 'large-v3',
+      liveModel: 'turbo',
       finalModel: 'large-v3',
     });
 
@@ -818,33 +865,50 @@ async function onStartLiveRecording() {
     liveState.stream = stream;
     liveState.recorder = recorder;
     liveState.chunks = [];
+    liveState.pendingChunkUploads = new Set();
     liveState.startedAtMs = Date.now();
+
+    stream.getTracks().forEach((track) => {
+      track.addEventListener('ended', () => {
+        if (liveState.active && !liveState.stopping) {
+          setLiveStatus('Capture source ended. Finalizing…');
+          void onStopLiveRecording();
+        }
+      });
+    });
     liveState.lastChunkAtMs = liveState.startedAtMs;
     liveState.active = true;
     liveState.stopping = false;
 
-    recorder.addEventListener('dataavailable', async (event) => {
+    recorder.addEventListener('dataavailable', (event) => {
       if (!event.data || !event.data.size || !liveState.sessionId) return;
 
-      try {
-        liveState.chunks.push(event.data);
+      const uploadPromise = (async () => {
+        try {
+          liveState.chunks.push(event.data);
 
-        const now = Date.now();
-        const durationMs = Math.max(now - liveState.lastChunkAtMs, 1000);
-        liveState.lastChunkAtMs = now;
+          const now = Date.now();
+          const durationMs = Math.max(now - liveState.lastChunkAtMs, 1000);
+          liveState.lastChunkAtMs = now;
 
-        const chunkBase64 = await blobToBase64(event.data);
-        const extension = event.data.type.includes('mp4') ? '.mp4' : '.webm';
+          const chunkBase64 = await blobToBase64(event.data);
+          const extension = event.data.type.includes('mp4') ? '.mp4' : '.webm';
 
-        await window.api.pushRealtimeChunk({
-          sessionId: liveState.sessionId,
-          chunkBase64,
-          extension,
-          durationMs,
-        });
-      } catch (error) {
-        appendTranscribeLog(`Chunk push failed: ${error.message}`);
-      }
+          await window.api.pushRealtimeChunk({
+            sessionId: liveState.sessionId,
+            chunkBase64,
+            extension,
+            durationMs,
+          });
+        } catch (error) {
+          appendTranscribeLog(`Chunk push failed: ${error.message}`);
+        }
+      })();
+
+      liveState.pendingChunkUploads.add(uploadPromise);
+      uploadPromise.finally(() => {
+        liveState.pendingChunkUploads.delete(uploadPromise);
+      });
     });
 
     recorder.addEventListener('error', (event) => {
@@ -857,7 +921,7 @@ async function onStartLiveRecording() {
 
     recorder.start(4000);
     setLiveStatus('Live recording started. Whisper is transcribing chunks in realtime…');
-    appendTranscribeLog(`Live source: ${sourceMode} | Task: ${task} | Model: large-v3`);
+    appendTranscribeLog(`Live source: ${sourceMode} | Task: ${task} | Model: turbo (final pass: large-v3)`);
     updateControls();
     setInputMode('live');
   } catch (error) {
@@ -900,10 +964,20 @@ async function onStopLiveRecording() {
       liveState.elapsedTimer = null;
     }
 
+    if (liveState.pendingChunkUploads.size > 0) {
+      setLiveStatus('Finishing last captured chunks…');
+      await Promise.allSettled(Array.from(liveState.pendingChunkUploads));
+    }
+
     stopLiveTracks();
 
     const blobType = liveState.chunks[0]?.type || (liveState.sourceMode === 'screen' ? 'video/webm' : 'audio/webm');
     const finalBlob = new Blob(liveState.chunks, { type: blobType });
+
+    if (!finalBlob.size) {
+      throw new Error('No audio captured. Check microphone/screen-audio permissions and try again.');
+    }
+
     const recordingBase64 = await blobToBase64(finalBlob);
     const extension = blobType.includes('mp4') ? '.mp4' : '.webm';
 
