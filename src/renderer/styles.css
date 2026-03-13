@@ -372,8 +372,46 @@ button:disabled {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  align-items: baseline;
+  align-items: center;
   font-size: 13px;
+}
+
+.progress-inline-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.progress-inline-meta #transcribeMeta {
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.mini-stat {
+  display: grid;
+  gap: 4px;
+  width: 112px;
+}
+
+.mini-stat span {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.mini-track {
+  height: 6px;
+  width: 100%;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--card-border) 72%, transparent);
+  overflow: hidden;
+}
+
+.mini-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--primary) 72%, #7aa5ff), var(--primary));
 }
 
 progress {

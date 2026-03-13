@@ -104,7 +104,17 @@
           <div id="transcribeProgressWrap" class="progress-wrap">
             <div class="progress-header">
               <strong>Transcription progress</strong>
-              <span id="transcribeMeta">Idle</span>
+              <div class="progress-inline-meta">
+                <div class="mini-stat" title="Estimated app CPU usage">
+                  <span id="cpuMetricLabel">CPU 0.0%</span>
+                  <div class="mini-track"><div id="cpuMetricBar" class="mini-fill"></div></div>
+                </div>
+                <div class="mini-stat" title="Estimated app power draw">
+                  <span id="powerMetricLabel">0.0W</span>
+                  <div class="mini-track"><div id="powerMetricBar" class="mini-fill"></div></div>
+                </div>
+                <span id="transcribeMeta">Idle</span>
+              </div>
             </div>
             <progress id="transcribeBar" value="0" max="100"></progress>
             <div class="kv small-gap">
