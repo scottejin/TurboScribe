@@ -8,12 +8,20 @@ TurboScribe is a macOS desktop app for local speech-to-text transcription using 
 - Top-right **Settings drawer** with all setup/update controls in one place
 - One-time **onboarding setup** flow for first-time users
 - Top-bar **Dark/Light switch** with **system-theme auto mode**
-- Full-width, space-efficient transcription layout
-- One-click download of Whisper `large-v3-turbo`
-- File picker for audio/video input
-- Live transcript updates while processing
+- Space-efficient full-window layout for transcript focus
+- Two input modes:
+  - **File transcription** (audio/video file)
+  - **Realtime recording**
+    - Voice recording from microphone
+    - Screen-audio recording flow (enable audio in share dialog)
+- Realtime Whisper pipeline with:
+  - Live provisional transcript blocks
+  - Final high-accuracy pass on stop (default `large-v3`)
+- Task mode support:
+  - Transcribe in source language
+  - Translate to English while processing
 - Improved Whisper launch/runtime status details
-- Progress bar with ETA during transcription (including estimated fallback when segment timing is still being calibrated)
+- Progress + ETA behavior tuned for difficult media timelines
 - Built-in **release updater** (checks GitHub releases, downloads installer, opens it)
 - Built-in **dependency installer** for `openai-whisper` and `ffmpeg`
 - Guided Homebrew bootstrap button (if Homebrew is missing)
@@ -52,9 +60,21 @@ DMG output will be in `dist/`.
 1. Open TurboScribe.
 2. In **Settings**, click **Install/repair dependencies** (first run).
 3. Click **Download large-v3-turbo model** (first run).
-4. Choose an audio/video file.
-5. Click **Start transcription**.
-6. Watch live transcript + progress/ETA.
+
+### File mode
+
+4. Choose **File transcription** mode.
+5. Pick an audio/video file.
+6. Click **Start transcription**.
+
+### Realtime mode
+
+4. Choose **Live recording** mode.
+5. Pick source:
+   - Voice recording (microphone), or
+   - Screen audio recording
+6. Choose task (Transcribe or Translate).
+7. Click **Start live recording**, then **Stop & finalize** when done.
 
 ### Updating the app
 

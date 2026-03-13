@@ -21,6 +21,19 @@ const onboardingReadyStep = document.getElementById('onboardingReadyStep');
 const onboardingOpenSettingsBtn = document.getElementById('onboardingOpenSettingsBtn');
 const onboardingDoneBtn = document.getElementById('onboardingDoneBtn');
 
+const modeFileBtn = document.getElementById('modeFileBtn');
+const modeLiveBtn = document.getElementById('modeLiveBtn');
+const filePanel = document.getElementById('filePanel');
+const livePanel = document.getElementById('livePanel');
+
+const liveSourceMic = document.getElementById('liveSourceMic');
+const liveSourceScreen = document.getElementById('liveSourceScreen');
+const liveTaskSelect = document.getElementById('liveTaskSelect');
+const startLiveBtn = document.getElementById('startLiveBtn');
+const stopLiveBtn = document.getElementById('stopLiveBtn');
+const liveElapsed = document.getElementById('liveElapsed');
+const liveStatusText = document.getElementById('liveStatusText');
+
 const downloadModelBtn = document.getElementById('downloadModelBtn');
 const modelDownloadWrap = document.getElementById('modelDownloadWrap');
 const modelDownloadBar = document.getElementById('modelDownloadBar');
@@ -49,6 +62,7 @@ const transcribeBar = document.getElementById('transcribeBar');
 const transcribeMeta = document.getElementById('transcribeMeta');
 const transcribeStatusText = document.getElementById('transcribeStatusText');
 const transcribeLogEl = document.getElementById('transcribeLog');
+const transcriptBlocks = document.getElementById('transcriptBlocks');
 const transcriptArea = document.getElementById('transcriptArea');
 
 const storageKeys = {
@@ -67,15 +81,31 @@ let appState = {
   modelInstalled: false,
   modelSizeBytes: 0,
   selectedFile: null,
-  transcribing: false,
+  fileTranscribing: false,
   outputPath: null,
   updateInfo: null,
   updateDownloading: false,
   dependenciesInstalling: false,
   settingsOpen: false,
+  inputMode: 'file',
 };
 
 let themeMode = localStorage.getItem(storageKeys.themeMode) || 'system';
+let transcriptEntries = [];
+
+const liveState = {
+  active: false,
+  stopping: false,
+  sessionId: null,
+  stream: null,
+  recorder: null,
+  chunks: [],
+  startedAtMs: 0,
+  lastChunkAtMs: 0,
+  elapsedTimer: null,
+  sourceMode: 'microphone',
+  task: 'transcribe',
+};
 
 function formatBytes(bytes) {
   if (!bytes || bytes <= 0) return '0 B';
@@ -97,6 +127,12 @@ function formatDuration(seconds) {
   }
 
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function formatRange(startSeconds, endSeconds) {
+  const start = formatDuration(startSeconds);
+  const end = Number.isFinite(endSeconds) && endSeconds > 0 ? formatDuration(endSeconds) : null;
+  return end && end !== '—' ? `${start} → ${end}` : start;
 }
 
 function setProgressIndeterminate(progressEl, indeterminate) {
@@ -151,36 +187,150 @@ function closeSettingsDrawer() {
   drawerBackdrop.classList.add('hidden');
 }
 
-function updateControls() {
-  const canStart =
-    appState.whisperInstalled &&
-    appState.ffprobeInstalled &&
-    appState.modelInstalled &&
-    Boolean(appState.selectedFile) &&
-    !appState.transcribing;
+function setInputMode(mode) {
+  if (liveState.active || appState.fileTranscribing) return;
 
-  const hasUpdate = Boolean(appState.updateInfo?.updateAvailable);
+  appState.inputMode = mode === 'live' ? 'live' : 'file';
 
-  startBtn.disabled = !canStart;
-  cancelBtn.disabled = !appState.transcribing;
-  pickFileBtn.disabled = appState.transcribing;
-  showOutputBtn.disabled = !appState.outputPath;
+  const isFile = appState.inputMode === 'file';
+  modeFileBtn.classList.toggle('active', isFile);
+  modeFileBtn.setAttribute('aria-selected', String(isFile));
+  modeLiveBtn.classList.toggle('active', !isFile);
+  modeLiveBtn.setAttribute('aria-selected', String(!isFile));
 
-  downloadModelBtn.disabled = appState.transcribing || appState.dependenciesInstalling;
+  filePanel.classList.toggle('hidden', !isFile);
+  livePanel.classList.toggle('hidden', isFile);
 
-  checkUpdateBtn.disabled = appState.updateDownloading || appState.dependenciesInstalling;
-  downloadUpdateBtn.disabled =
-    !hasUpdate || appState.updateDownloading || appState.dependenciesInstalling;
+  updateControls();
+}
 
-  installDepsBtn.disabled = appState.dependenciesInstalling || appState.transcribing;
-  cancelDepsBtn.disabled = !appState.dependenciesInstalling;
-  installBrewBtn.disabled = appState.dependenciesInstalling;
+function renderTranscriptBoard() {
+  transcriptBlocks.innerHTML = '';
 
-  onboardingDoneBtn.disabled = !(
-    appState.whisperInstalled &&
-    appState.ffprobeInstalled &&
-    appState.modelInstalled
-  );
+  if (!transcriptEntries.length) {
+    const empty = document.createElement('div');
+    empty.className = 'transcript-empty';
+    empty.textContent =
+      appState.inputMode === 'live'
+        ? 'Start live recording to see realtime transcript blocks here.'
+        : 'Pick a file and start transcription to populate this transcript view.';
+    transcriptBlocks.appendChild(empty);
+    transcriptArea.value = '';
+    return;
+  }
+
+  const lines = [];
+
+  for (const entry of transcriptEntries) {
+    const card = document.createElement('article');
+    card.className = `transcript-item${entry.provisional ? ' provisional' : ''}`;
+
+    const header = document.createElement('div');
+    header.className = 'transcript-item-header';
+
+    const timeChip = document.createElement('span');
+    timeChip.className = 'transcript-time';
+    if (Number.isFinite(entry.startSeconds)) {
+      timeChip.textContent = formatRange(entry.startSeconds, entry.endSeconds);
+    } else {
+      timeChip.textContent = 'Untimed';
+    }
+
+    const kind = document.createElement('span');
+    kind.className = 'transcript-kind';
+    kind.textContent = entry.provisional ? 'Live (provisional)' : 'Final';
+
+    const text = document.createElement('p');
+    text.className = 'transcript-text';
+    text.textContent = entry.text;
+
+    header.appendChild(timeChip);
+    header.appendChild(kind);
+    card.appendChild(header);
+    card.appendChild(text);
+
+    transcriptBlocks.appendChild(card);
+
+    lines.push(entry.text);
+  }
+
+  transcriptBlocks.scrollTop = transcriptBlocks.scrollHeight;
+  transcriptArea.value = lines.join('\n');
+}
+
+function resetTranscriptBoard() {
+  transcriptEntries = [];
+  renderTranscriptBoard();
+}
+
+function addTranscriptEntry(entry) {
+  const normalized = {
+    id: entry.id || `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    text: String(entry.text || '').trim(),
+    startSeconds: Number(entry.startSeconds),
+    endSeconds: Number(entry.endSeconds),
+    provisional: Boolean(entry.provisional),
+  };
+
+  if (!normalized.text) return;
+
+  transcriptEntries.push(normalized);
+  renderTranscriptBoard();
+}
+
+function replaceTranscriptWithFinal(segments, fullText) {
+  transcriptEntries = [];
+
+  if (Array.isArray(segments) && segments.length) {
+    segments.forEach((segment) => {
+      addTranscriptEntry({
+        text: segment.text,
+        startSeconds: Number(segment.startSeconds),
+        endSeconds: Number(segment.endSeconds),
+        provisional: false,
+      });
+    });
+    return;
+  }
+
+  const lines = String(fullText || '')
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    addTranscriptEntry({
+      text: line,
+      provisional: false,
+    });
+  }
+}
+
+function updateLiveElapsed() {
+  if (!liveState.active) {
+    liveElapsed.textContent = 'Elapsed 00:00';
+    return;
+  }
+
+  const elapsedSeconds = (Date.now() - liveState.startedAtMs) / 1000;
+  liveElapsed.textContent = `Elapsed ${formatDuration(elapsedSeconds)}`;
+}
+
+function setFileStatus(text) {
+  transcribeStatusText.textContent = text;
+}
+
+function appendDepsLog(line, stream = 'stdout') {
+  const prefix = stream === 'stderr' ? '[err]' : '[out]';
+  const next = `${depsLogEl.textContent}${depsLogEl.textContent ? '\n' : ''}${prefix} ${line}`;
+  depsLogEl.textContent = next.slice(-28000);
+  depsLogEl.scrollTop = depsLogEl.scrollHeight;
+}
+
+function appendTranscribeLog(line) {
+  const next = `${transcribeLogEl.textContent}${transcribeLogEl.textContent ? '\n' : ''}${line}`;
+  transcribeLogEl.textContent = next.slice(-30000);
+  transcribeLogEl.scrollTop = transcribeLogEl.scrollHeight;
 }
 
 function renderSetupStatus() {
@@ -216,13 +366,11 @@ function renderOnboarding() {
   const done = localStorage.getItem(storageKeys.onboardingDone) === '1';
   if (done) {
     onboardingPanel.classList.add('hidden');
-    return;
+  } else {
+    onboardingPanel.classList.remove('hidden');
   }
 
-  onboardingPanel.classList.remove('hidden');
-  onboardingDoneBtn.textContent = allReady
-    ? 'Finish onboarding'
-    : 'Finish onboarding (complete setup first)';
+  onboardingDoneBtn.disabled = !allReady;
 }
 
 function completeOnboarding() {
@@ -231,6 +379,45 @@ function completeOnboarding() {
 
   localStorage.setItem(storageKeys.onboardingDone, '1');
   renderOnboarding();
+}
+
+function updateControls() {
+  const busyRecording = appState.fileTranscribing || liveState.active || liveState.stopping;
+  const hasUpdate = Boolean(appState.updateInfo?.updateAvailable);
+  const canStartFile =
+    appState.whisperInstalled &&
+    appState.ffprobeInstalled &&
+    appState.modelInstalled &&
+    Boolean(appState.selectedFile) &&
+    !busyRecording &&
+    appState.inputMode === 'file';
+
+  modeFileBtn.disabled = busyRecording;
+  modeLiveBtn.disabled = busyRecording;
+
+  pickFileBtn.disabled = busyRecording || appState.inputMode !== 'file';
+  startBtn.disabled = !canStartFile;
+  cancelBtn.disabled = !appState.fileTranscribing;
+  showOutputBtn.disabled = !appState.outputPath;
+
+  startLiveBtn.disabled =
+    appState.inputMode !== 'live' ||
+    liveState.active ||
+    liveState.stopping ||
+    appState.fileTranscribing ||
+    appState.dependenciesInstalling;
+
+  stopLiveBtn.disabled = !liveState.active || liveState.stopping;
+
+  const settingsBusy = busyRecording || appState.dependenciesInstalling;
+  downloadModelBtn.disabled = settingsBusy;
+
+  checkUpdateBtn.disabled = appState.updateDownloading || settingsBusy;
+  downloadUpdateBtn.disabled = !hasUpdate || appState.updateDownloading || settingsBusy;
+
+  installDepsBtn.disabled = appState.dependenciesInstalling || busyRecording;
+  cancelDepsBtn.disabled = !appState.dependenciesInstalling;
+  installBrewBtn.disabled = appState.dependenciesInstalling || busyRecording;
 }
 
 async function refreshSystemStatus() {
@@ -249,7 +436,7 @@ async function refreshSystemStatus() {
     renderOnboarding();
     updateControls();
   } catch (error) {
-    transcribeStatusText.textContent = `Status check failed: ${error.message}`;
+    setFileStatus(`Status check failed: ${error.message}`);
   }
 }
 
@@ -260,22 +447,9 @@ function setSelectedFile(filePath) {
   updateControls();
 }
 
-function setTranscribing(flag) {
-  appState.transcribing = flag;
+function setFileTranscribing(flag) {
+  appState.fileTranscribing = flag;
   updateControls();
-}
-
-function appendDepsLog(line, stream = 'stdout') {
-  const prefix = stream === 'stderr' ? '[err]' : '[out]';
-  const next = `${depsLogEl.textContent}${depsLogEl.textContent ? '\n' : ''}${prefix} ${line}`;
-  depsLogEl.textContent = next.slice(-24000);
-  depsLogEl.scrollTop = depsLogEl.scrollHeight;
-}
-
-function appendTranscribeLog(line) {
-  const next = `${transcribeLogEl.textContent}${transcribeLogEl.textContent ? '\n' : ''}${line}`;
-  transcribeLogEl.textContent = next.slice(-24000);
-  transcribeLogEl.scrollTop = transcribeLogEl.scrollHeight;
 }
 
 async function onPickFile() {
@@ -283,7 +457,6 @@ async function onPickFile() {
   if (!filePath) return;
 
   appState.outputPath = null;
-  showOutputBtn.disabled = true;
   setSelectedFile(filePath);
 }
 
@@ -366,19 +539,19 @@ async function onInstallHomebrewGuided() {
   }
 }
 
-async function onStartTranscription() {
+async function onStartFileTranscription() {
   if (!appState.selectedFile) return;
 
-  transcriptArea.value = '';
-  transcribeLogEl.textContent = 'Starting transcription…';
+  resetTranscriptBoard();
+  transcribeLogEl.textContent = 'Starting file transcription…';
   appState.outputPath = null;
 
   transcribeProgressWrap.classList.remove('hidden');
   setProgressIndeterminate(transcribeBar, true);
   transcribeMeta.textContent = 'Launching Whisper…';
-  transcribeStatusText.textContent = 'Preparing transcription pipeline…';
+  setFileStatus('Preparing transcription pipeline…');
 
-  setTranscribing(true);
+  setFileTranscribing(true);
 
   try {
     const started = await window.api.startTranscription(appState.selectedFile);
@@ -386,19 +559,262 @@ async function onStartTranscription() {
       transcribeMeta.textContent = `0.0% • ETA calculating… • 00:00/${formatDuration(started.durationSeconds)}`;
     }
   } catch (error) {
-    setTranscribing(false);
-    transcribeStatusText.textContent = `Could not start: ${error.message}`;
+    setFileTranscribing(false);
+    setFileStatus(`Could not start: ${error.message}`);
   }
 }
 
-async function onCancelTranscription() {
+async function onCancelFileTranscription() {
   await window.api.cancelTranscription();
 }
 
-function appendTranscript(text) {
-  if (!text) return;
-  transcriptArea.value += (transcriptArea.value ? '\n' : '') + text;
-  transcriptArea.scrollTop = transcriptArea.scrollHeight;
+function getSelectedLiveSource() {
+  return liveSourceScreen.checked ? 'screen' : 'microphone';
+}
+
+function pickRecorderMimeType(sourceMode) {
+  const candidates =
+    sourceMode === 'screen'
+      ? ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
+      : ['audio/webm;codecs=opus', 'audio/webm'];
+
+  for (const mimeType of candidates) {
+    if (MediaRecorder.isTypeSupported(mimeType)) return mimeType;
+  }
+
+  return '';
+}
+
+async function blobToBase64(blob) {
+  const arr = await blob.arrayBuffer();
+  let binary = '';
+  const bytes = new Uint8Array(arr);
+  const chunk = 0x8000;
+
+  for (let i = 0; i < bytes.length; i += chunk) {
+    const slice = bytes.subarray(i, i + chunk);
+    binary += String.fromCharCode(...slice);
+  }
+
+  return btoa(binary);
+}
+
+async function requestLiveStream(sourceMode) {
+  if (sourceMode === 'microphone') {
+    return navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
+      video: false,
+    });
+  }
+
+  const stream = await navigator.mediaDevices.getDisplayMedia({
+    video: true,
+    audio: true,
+  });
+
+  if (!stream.getAudioTracks().length) {
+    stream.getTracks().forEach((track) => track.stop());
+    throw new Error('No audio track captured. In the share dialog, enable audio before starting.');
+  }
+
+  return stream;
+}
+
+function stopLiveTracks() {
+  if (!liveState.stream) return;
+  liveState.stream.getTracks().forEach((track) => track.stop());
+  liveState.stream = null;
+}
+
+function resetLiveState() {
+  if (liveState.elapsedTimer) {
+    clearInterval(liveState.elapsedTimer);
+    liveState.elapsedTimer = null;
+  }
+
+  liveState.active = false;
+  liveState.stopping = false;
+  liveState.sessionId = null;
+  liveState.recorder = null;
+  liveState.chunks = [];
+  liveState.startedAtMs = 0;
+  liveState.lastChunkAtMs = 0;
+  liveState.sourceMode = getSelectedLiveSource();
+  liveState.task = liveTaskSelect.value;
+
+  updateLiveElapsed();
+  updateControls();
+}
+
+function setLiveStatus(text) {
+  liveStatusText.textContent = text;
+  setFileStatus(text);
+}
+
+async function onStartLiveRecording() {
+  if (liveState.active || liveState.stopping || appState.fileTranscribing) return;
+
+  appState.outputPath = null;
+  resetTranscriptBoard();
+  transcribeLogEl.textContent = 'Starting live recording session…';
+
+  const sourceMode = getSelectedLiveSource();
+  const task = liveTaskSelect.value === 'translate' ? 'translate' : 'transcribe';
+
+  liveState.sourceMode = sourceMode;
+  liveState.task = task;
+
+  transcribeProgressWrap.classList.remove('hidden');
+  setProgressIndeterminate(transcribeBar, true);
+  transcribeMeta.textContent = 'Live capture running (max-accuracy mode)';
+
+  setLiveStatus('Starting realtime session…');
+
+  let sessionStarted = false;
+
+  try {
+    const session = await window.api.startRealtimeSession({
+      sourceMode,
+      task,
+      liveModel: 'large-v3',
+      finalModel: 'large-v3',
+    });
+
+    sessionStarted = true;
+    liveState.sessionId = session.sessionId;
+
+    const stream = await requestLiveStream(sourceMode);
+    const mimeType = pickRecorderMimeType(sourceMode);
+
+    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+
+    liveState.stream = stream;
+    liveState.recorder = recorder;
+    liveState.chunks = [];
+    liveState.startedAtMs = Date.now();
+    liveState.lastChunkAtMs = liveState.startedAtMs;
+    liveState.active = true;
+    liveState.stopping = false;
+
+    recorder.addEventListener('dataavailable', async (event) => {
+      if (!event.data || !event.data.size || !liveState.sessionId) return;
+
+      try {
+        liveState.chunks.push(event.data);
+
+        const now = Date.now();
+        const durationMs = Math.max(now - liveState.lastChunkAtMs, 1000);
+        liveState.lastChunkAtMs = now;
+
+        const chunkBase64 = await blobToBase64(event.data);
+        const extension = event.data.type.includes('mp4') ? '.mp4' : '.webm';
+
+        await window.api.pushRealtimeChunk({
+          sessionId: liveState.sessionId,
+          chunkBase64,
+          extension,
+          durationMs,
+        });
+      } catch (error) {
+        appendTranscribeLog(`Chunk push failed: ${error.message}`);
+      }
+    });
+
+    recorder.addEventListener('error', (event) => {
+      appendTranscribeLog(`Recorder error: ${event.error?.message || 'Unknown recorder error'}`);
+      setLiveStatus('Recorder encountered an error.');
+    });
+
+    liveState.elapsedTimer = setInterval(updateLiveElapsed, 500);
+    updateLiveElapsed();
+
+    recorder.start(4000);
+    setLiveStatus('Live recording started. Whisper is transcribing chunks in realtime…');
+    appendTranscribeLog(`Live source: ${sourceMode} | Task: ${task} | Model: large-v3`);
+    updateControls();
+    setInputMode('live');
+  } catch (error) {
+    stopLiveTracks();
+
+    if (sessionStarted && liveState.sessionId) {
+      try {
+        await window.api.cancelRealtimeSession({ sessionId: liveState.sessionId });
+      } catch {
+        // ignore
+      }
+    }
+
+    resetLiveState();
+    setLiveStatus(`Failed to start live recording: ${error.message}`);
+  }
+}
+
+async function onStopLiveRecording() {
+  if (!liveState.active || !liveState.recorder || !liveState.sessionId) return;
+
+  liveState.stopping = true;
+  updateControls();
+  setLiveStatus('Stopping capture and running final high-accuracy pass…');
+  transcribeMeta.textContent = 'Finalizing live recording…';
+  setProgressIndeterminate(transcribeBar, true);
+
+  const recorder = liveState.recorder;
+
+  try {
+    if (recorder.state !== 'inactive') {
+      await new Promise((resolve) => {
+        recorder.addEventListener('stop', resolve, { once: true });
+        recorder.stop();
+      });
+    }
+
+    if (liveState.elapsedTimer) {
+      clearInterval(liveState.elapsedTimer);
+      liveState.elapsedTimer = null;
+    }
+
+    stopLiveTracks();
+
+    const blobType = liveState.chunks[0]?.type || (liveState.sourceMode === 'screen' ? 'video/webm' : 'audio/webm');
+    const finalBlob = new Blob(liveState.chunks, { type: blobType });
+    const recordingBase64 = await blobToBase64(finalBlob);
+    const extension = blobType.includes('mp4') ? '.mp4' : '.webm';
+
+    appendTranscribeLog('Running final large-v3 pass over complete recording…');
+
+    const result = await window.api.stopRealtimeSession({
+      sessionId: liveState.sessionId,
+      recordingBase64,
+      extension,
+    });
+
+    if (result?.segments?.length || result?.transcript) {
+      replaceTranscriptWithFinal(result.segments, result.transcript);
+    }
+
+    if (result?.outputPath) {
+      appState.outputPath = result.outputPath;
+    }
+
+    setProgressValue(transcribeBar, 100);
+    transcribeMeta.textContent = `Finalized • ${formatDuration(result?.elapsedSeconds || 0)}`;
+    setLiveStatus(`Live transcription complete (${formatDuration(result?.elapsedSeconds || 0)}).`);
+  } catch (error) {
+    setLiveStatus(`Failed to finalize live recording: ${error.message}`);
+    appendTranscribeLog(`Finalize error: ${error.message}`);
+
+    try {
+      await window.api.cancelRealtimeSession({ sessionId: liveState.sessionId });
+    } catch {
+      // ignore
+    }
+  } finally {
+    resetLiveState();
+  }
 }
 
 window.api.onModelDownloadState(async (evt) => {
@@ -541,11 +957,16 @@ window.api.onTranscribeLog((evt) => {
 });
 
 window.api.onTranscribeStatus((evt) => {
-  transcribeStatusText.textContent = evt.message || 'Working…';
+  setFileStatus(evt.message || 'Working…');
 });
 
 window.api.onTranscribeSegment((segment) => {
-  appendTranscript(segment.text);
+  addTranscriptEntry({
+    text: segment.text,
+    startSeconds: segment.startSeconds,
+    endSeconds: segment.endSeconds,
+    provisional: false,
+  });
 });
 
 window.api.onTranscribeProgress((evt) => {
@@ -554,22 +975,19 @@ window.api.onTranscribeProgress((evt) => {
   const processed = formatDuration(evt.processedSeconds || 0);
   const total = formatDuration(evt.durationSeconds || 0);
 
-  if (evt.estimated) {
-    setProgressValue(transcribeBar, pct);
-    transcribeMeta.textContent = `${pct.toFixed(1)}% • ETA ${eta} • ${processed}/${total} (estimated)`;
-  } else {
-    setProgressValue(transcribeBar, pct);
-    transcribeMeta.textContent = `${pct.toFixed(1)}% • ETA ${eta} • ${processed}/${total}`;
-  }
+  setProgressValue(transcribeBar, pct);
+  transcribeMeta.textContent = evt.estimated
+    ? `${pct.toFixed(1)}% • ETA ${eta} • ${processed}/${total} (estimated)`
+    : `${pct.toFixed(1)}% • ETA ${eta} • ${processed}/${total}`;
 });
 
 window.api.onTranscribeDone((evt) => {
-  setTranscribing(false);
+  setFileTranscribing(false);
   setProgressValue(transcribeBar, 100);
-  transcribeStatusText.textContent = `Done in ${formatDuration(evt.elapsedSeconds || 0)}`;
+  setFileStatus(`Done in ${formatDuration(evt.elapsedSeconds || 0)}`);
 
-  if (evt.transcript && !transcriptArea.value.trim()) {
-    transcriptArea.value = evt.transcript;
+  if (evt.transcript && !transcriptEntries.length) {
+    replaceTranscriptWithFinal([], evt.transcript);
   }
 
   if (evt.outputPath) {
@@ -581,9 +999,71 @@ window.api.onTranscribeDone((evt) => {
 });
 
 window.api.onTranscribeError((evt) => {
-  setTranscribing(false);
-  transcribeStatusText.textContent = `Error: ${evt.message}`;
+  setFileTranscribing(false);
+  setFileStatus(`Error: ${evt.message}`);
   updateControls();
+});
+
+window.api.onRealtimeState((evt) => {
+  if (!evt || !evt.state) return;
+
+  if (evt.state === 'started') {
+    setLiveStatus('Realtime session started. Capturing audio…');
+    appendTranscribeLog(`Realtime session ${evt.sessionId} started.`);
+  }
+
+  if (evt.state === 'chunk-received') {
+    setLiveStatus(`Realtime chunk ${evt.chunkIndex} captured.`);
+  }
+
+  if (evt.state === 'processing-chunk') {
+    setLiveStatus(`Processing chunk ${evt.chunkIndex}…`);
+  }
+
+  if (evt.state === 'queue-idle' && liveState.active) {
+    setLiveStatus('Realtime queue caught up. Listening for more audio…');
+  }
+
+  if (evt.state === 'finalizing-started') {
+    setLiveStatus('Finalizing: waiting for remaining realtime chunks…');
+  }
+
+  if (evt.state === 'finalizing-transcription') {
+    setLiveStatus('Finalizing: running full high-accuracy transcription…');
+  }
+
+  if (evt.state === 'cancelled') {
+    setLiveStatus('Realtime session cancelled.');
+  }
+});
+
+window.api.onRealtimeSegment((evt) => {
+  addTranscriptEntry({
+    text: evt.text,
+    startSeconds: evt.startSeconds,
+    endSeconds: evt.endSeconds,
+    provisional: true,
+  });
+
+  const elapsed = (Date.now() - liveState.startedAtMs) / 1000;
+  transcribeMeta.textContent = `Live capture • ${formatDuration(elapsed)} elapsed`;
+  setProgressIndeterminate(transcribeBar, true);
+});
+
+window.api.onRealtimeFinal((evt) => {
+  replaceTranscriptWithFinal(evt.segments, evt.transcript);
+  if (evt.outputPath) {
+    appState.outputPath = evt.outputPath;
+  }
+  setProgressValue(transcribeBar, 100);
+  transcribeMeta.textContent = `Finalized • ${formatDuration(evt.elapsedSeconds || 0)}`;
+  renderOnboarding();
+  updateControls();
+});
+
+window.api.onRealtimeError((evt) => {
+  appendTranscribeLog(`Realtime error: ${evt.message}`);
+  setLiveStatus(`Realtime error: ${evt.message}`);
 });
 
 settingsBtn.addEventListener('click', openSettingsDrawer);
@@ -605,13 +1085,14 @@ themeAutoBtn.addEventListener('click', () => {
 });
 
 mediaTheme.addEventListener('change', () => {
-  if (themeMode === 'system') {
-    applyTheme();
-  }
+  if (themeMode === 'system') applyTheme();
 });
 
 onboardingOpenSettingsBtn.addEventListener('click', openSettingsDrawer);
 onboardingDoneBtn.addEventListener('click', completeOnboarding);
+
+modeFileBtn.addEventListener('click', () => setInputMode('file'));
+modeLiveBtn.addEventListener('click', () => setInputMode('live'));
 
 showOutputBtn.addEventListener('click', async () => {
   if (!appState.outputPath) return;
@@ -625,9 +1106,25 @@ downloadUpdateBtn.addEventListener('click', onDownloadAndOpenUpdate);
 installDepsBtn.addEventListener('click', onInstallDependencies);
 cancelDepsBtn.addEventListener('click', onCancelDependencies);
 installBrewBtn.addEventListener('click', onInstallHomebrewGuided);
-startBtn.addEventListener('click', onStartTranscription);
-cancelBtn.addEventListener('click', onCancelTranscription);
+startBtn.addEventListener('click', onStartFileTranscription);
+cancelBtn.addEventListener('click', onCancelFileTranscription);
+startLiveBtn.addEventListener('click', onStartLiveRecording);
+stopLiveBtn.addEventListener('click', onStopLiveRecording);
+
+liveTaskSelect.addEventListener('change', () => {
+  liveState.task = liveTaskSelect.value;
+});
+
+liveSourceMic.addEventListener('change', () => {
+  if (liveSourceMic.checked) liveState.sourceMode = 'microphone';
+});
+
+liveSourceScreen.addEventListener('change', () => {
+  if (liveSourceScreen.checked) liveState.sourceMode = 'screen';
+});
 
 applyTheme();
+setInputMode('file');
+resetTranscriptBoard();
 refreshSystemStatus();
 updateControls();

@@ -46,15 +46,59 @@
         </section>
 
         <section class="card transcribe-card">
-          <div class="toolbar-grid choose-row">
-            <button id="pickFileBtn">Choose audio/video file</button>
-            <div id="selectedFile" class="file-pill">No file selected</div>
+          <div class="mode-switch" role="tablist" aria-label="Input mode">
+            <button id="modeFileBtn" class="active" role="tab" aria-selected="true">File transcription</button>
+            <button id="modeLiveBtn" role="tab" aria-selected="false">Live recording</button>
           </div>
 
-          <div class="toolbar-grid action-row">
-            <button id="startBtn" class="primary" disabled>Start transcription</button>
-            <button id="cancelBtn" class="danger" disabled>Cancel</button>
-            <button id="showOutputBtn" disabled>Show transcript in Finder</button>
+          <div id="filePanel" class="input-panel">
+            <div class="toolbar-grid choose-row">
+              <button id="pickFileBtn">Choose audio/video file</button>
+              <div id="selectedFile" class="file-pill">No file selected</div>
+            </div>
+
+            <div class="toolbar-grid action-row">
+              <button id="startBtn" class="primary" disabled>Start transcription</button>
+              <button id="cancelBtn" class="danger" disabled>Cancel</button>
+              <button id="showOutputBtn" disabled>Show transcript in Finder</button>
+            </div>
+          </div>
+
+          <div id="livePanel" class="input-panel hidden">
+            <div class="source-grid">
+              <label class="source-card">
+                <input type="radio" name="liveSource" id="liveSourceMic" value="microphone" checked />
+                <span class="source-title">Voice recording</span>
+                <span class="source-sub">Capture microphone audio in realtime.</span>
+              </label>
+              <label class="source-card">
+                <input type="radio" name="liveSource" id="liveSourceScreen" value="screen" />
+                <span class="source-title">Screen audio recording</span>
+                <span class="source-sub">Capture screen share audio (enable audio in share dialog).</span>
+              </label>
+            </div>
+
+            <div class="toolbar-grid choose-row">
+              <label class="select-wrap">
+                <span>Realtime task</span>
+                <select id="liveTaskSelect">
+                  <option value="transcribe">Transcribe (original language)</option>
+                  <option value="translate">Translate to English</option>
+                </select>
+              </label>
+              <div id="liveStatusBadge" class="file-pill">Accuracy profile: Max (large-v3 live + final pass)</div>
+            </div>
+
+            <div class="toolbar-grid action-row">
+              <button id="startLiveBtn" class="primary">Start live recording</button>
+              <button id="stopLiveBtn" class="danger" disabled>Stop &amp; finalize</button>
+              <div id="liveElapsed" class="file-pill">Elapsed 00:00</div>
+            </div>
+
+            <div class="kv small-gap">
+              <span>Live status</span>
+              <span id="liveStatusText">Idle</span>
+            </div>
           </div>
 
           <div id="transcribeProgressWrap" class="progress-wrap">
@@ -71,10 +115,13 @@
 
           <pre id="transcribeLog" class="logbox slim">Whisper launch and runtime logs will appear here.</pre>
 
+          <div id="transcriptBlocks" class="transcript-blocks" aria-live="polite"></div>
+
           <textarea
             id="transcriptArea"
             readonly
-            placeholder="Transcript will appear here while the file is processed."
+            class="hidden"
+            placeholder="Transcript storage"
           ></textarea>
         </section>
       </main>

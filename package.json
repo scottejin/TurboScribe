@@ -1,6 +1,6 @@
 {
   "name": "turboscribe",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Local Whisper large-v3-turbo transcription GUI for macOS",
   "main": "src/main.js",
   "type": "commonjs",
