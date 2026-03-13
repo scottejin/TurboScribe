@@ -1133,7 +1133,7 @@ ipcMain.handle('realtime:start', async (_event, payload = {}) => {
       sourceMode: payload.sourceMode === 'screen' ? 'screen' : 'microphone',
       task: payload.task === 'translate' ? 'translate' : 'transcribe',
       language: payload.language || undefined,
-      liveModel: payload.liveModel || 'large-v3',
+      liveModel: payload.liveModel || 'turbo',
       finalModel: payload.finalModel || 'large-v3',
     },
     whisperPath,
