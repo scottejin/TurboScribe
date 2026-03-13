@@ -110,6 +110,7 @@ const liveState = {
   stopping: false,
   sessionId: null,
   stream: null,
+  captureStreams: [],
   recorder: null,
   chunks: [],
   pendingChunkUploads: new Set(),
@@ -729,17 +730,35 @@ function getSelectedLiveSource() {
   return liveSourceScreen.checked ? 'screen' : 'microphone';
 }
 
-function pickRecorderMimeType(sourceMode) {
-  const candidates =
-    sourceMode === 'screen'
-      ? ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
-      : ['audio/webm;codecs=opus', 'audio/webm'];
+function getRecorderMimeCandidates() {
+  return [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm',
+    'audio/mp4',
+    '',
+  ];
+}
 
-  for (const mimeType of candidates) {
-    if (MediaRecorder.isTypeSupported(mimeType)) return mimeType;
+function createMediaRecorderWithFallback(stream) {
+  let lastError = null;
+
+  for (const mimeType of getRecorderMimeCandidates()) {
+    try {
+      if (mimeType && !MediaRecorder.isTypeSupported(mimeType)) continue;
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      return {
+        recorder,
+        mimeType: mimeType || recorder.mimeType || 'default',
+      };
+    } catch (error) {
+      lastError = error;
+    }
   }
 
-  return '';
+  throw lastError || new Error('Could not initialize MediaRecorder.');
 }
 
 async function blobToBase64(blob) {
@@ -756,34 +775,83 @@ async function blobToBase64(blob) {
   return btoa(binary);
 }
 
+async function requestMicrophoneStream() {
+  return navigator.mediaDevices.getUserMedia({
+    audio: {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    },
+    video: false,
+  });
+}
+
 async function requestLiveStream(sourceMode) {
   if (sourceMode === 'microphone') {
-    return navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-      },
-      video: false,
+    const mic = await requestMicrophoneStream();
+    return {
+      recordingStream: mic,
+      captureStreams: [mic],
+      note: 'Microphone capture active.',
+      fallbackUsed: false,
+    };
+  }
+
+  try {
+    const display = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: true,
     });
+
+    const displayAudioTracks = display.getAudioTracks();
+    if (displayAudioTracks.length) {
+      const audioOnly = new MediaStream(displayAudioTracks);
+      return {
+        recordingStream: audioOnly,
+        captureStreams: [display],
+        note: 'Screen-audio capture active.',
+        fallbackUsed: false,
+      };
+    }
+
+    const mic = await requestMicrophoneStream();
+    const merged = new MediaStream(mic.getAudioTracks());
+
+    return {
+      recordingStream: merged,
+      captureStreams: [display, mic],
+      note: 'Screen shared without audio. Using microphone-audio fallback.',
+      fallbackUsed: true,
+    };
+  } catch (error) {
+    const reason = `${error?.name || ''} ${error?.message || ''}`.toLowerCase();
+
+    if (reason.includes('notsupported') || reason.includes('not supported')) {
+      const mic = await requestMicrophoneStream();
+      return {
+        recordingStream: mic,
+        captureStreams: [mic],
+        note: 'Screen-audio capture not supported here. Using microphone-audio fallback.',
+        fallbackUsed: true,
+      };
+    }
+
+    throw error;
   }
-
-  const stream = await navigator.mediaDevices.getDisplayMedia({
-    video: true,
-    audio: true,
-  });
-
-  if (!stream.getAudioTracks().length) {
-    stream.getTracks().forEach((track) => track.stop());
-    throw new Error('No audio track captured. In the share dialog, enable audio before starting.');
-  }
-
-  return stream;
 }
 
 function stopLiveTracks() {
-  if (!liveState.stream) return;
-  liveState.stream.getTracks().forEach((track) => track.stop());
+  const streams = Array.isArray(liveState.captureStreams) && liveState.captureStreams.length
+    ? liveState.captureStreams
+    : liveState.stream
+      ? [liveState.stream]
+      : [];
+
+  streams.forEach((stream) => {
+    stream.getTracks().forEach((track) => track.stop());
+  });
+
+  liveState.captureStreams = [];
   liveState.stream = null;
 }
 
@@ -796,6 +864,8 @@ function resetLiveState() {
   liveState.active = false;
   liveState.stopping = false;
   liveState.sessionId = null;
+  liveState.stream = null;
+  liveState.captureStreams = [];
   liveState.recorder = null;
   liveState.chunks = [];
   liveState.pendingChunkUploads = new Set();
@@ -857,23 +927,31 @@ async function onStartLiveRecording() {
     sessionStarted = true;
     liveState.sessionId = session.sessionId;
 
-    const stream = await requestLiveStream(sourceMode);
-    const mimeType = pickRecorderMimeType(sourceMode);
+    const streamBundle = await requestLiveStream(sourceMode);
+    const stream = streamBundle.recordingStream;
 
-    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    if (!stream.getAudioTracks().length) {
+      throw new Error('No audio track available for live recording.');
+    }
+
+    const recorderBundle = createMediaRecorderWithFallback(stream);
+    const recorder = recorderBundle.recorder;
 
     liveState.stream = stream;
+    liveState.captureStreams = streamBundle.captureStreams || [stream];
     liveState.recorder = recorder;
     liveState.chunks = [];
     liveState.pendingChunkUploads = new Set();
     liveState.startedAtMs = Date.now();
 
-    stream.getTracks().forEach((track) => {
-      track.addEventListener('ended', () => {
-        if (liveState.active && !liveState.stopping) {
-          setLiveStatus('Capture source ended. Finalizing…');
-          void onStopLiveRecording();
-        }
+    liveState.captureStreams.forEach((captureStream) => {
+      captureStream.getTracks().forEach((track) => {
+        track.addEventListener('ended', () => {
+          if (liveState.active && !liveState.stopping) {
+            setLiveStatus('Capture source ended. Finalizing…');
+            void onStopLiveRecording();
+          }
+        });
       });
     });
     liveState.lastChunkAtMs = liveState.startedAtMs;
@@ -920,8 +998,14 @@ async function onStartLiveRecording() {
     updateLiveElapsed();
 
     recorder.start(4000);
-    setLiveStatus('Live recording started. Whisper is transcribing chunks in realtime…');
-    appendTranscribeLog(`Live source: ${sourceMode} | Task: ${task} | Model: turbo (final pass: large-v3)`);
+    const liveStartMessage = streamBundle.fallbackUsed
+      ? `Live recording started with fallback. ${streamBundle.note}`
+      : 'Live recording started. Whisper is transcribing chunks in realtime…';
+    setLiveStatus(liveStartMessage);
+    appendTranscribeLog(
+      `Live source: ${sourceMode} | Task: ${task} | Recorder: ${recorderBundle.mimeType} | Model: turbo (final pass: large-v3)` +
+        (streamBundle.note ? ` | Note: ${streamBundle.note}` : ''),
+    );
     updateControls();
     setInputMode('live');
   } catch (error) {
@@ -936,7 +1020,9 @@ async function onStartLiveRecording() {
     }
 
     resetLiveState();
-    setLiveStatus(`Failed to start live recording: ${error.message}`);
+    const label = [error?.name, error?.message].filter(Boolean).join(': ') || 'Unknown error';
+    setLiveStatus(`Failed to start live recording: ${label}`);
+    appendTranscribeLog(`Live start error: ${label}`);
   }
 }
 
